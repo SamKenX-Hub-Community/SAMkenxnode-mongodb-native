@@ -2,15 +2,16 @@
 const os = require('os');
 const fs = require('fs');
 const { expect } = require('chai');
-const { promisify } = require('util');
 const { getSymbolFrom } = require('../tools/utils');
-const { parseOptions, resolveSRVRecord } = require('../../src/connection_string');
-const { ReadConcern } = require('../../src/read_concern');
-const { WriteConcern } = require('../../src/write_concern');
-const { ReadPreference } = require('../../src/read_preference');
-const { Logger } = require('../../src/logger');
-const { MongoCredentials } = require('../../src/cmap/auth/mongo_credentials');
-const { MongoClient, MongoParseError, ServerApiVersion } = require('../../src');
+const { parseOptions, resolveSRVRecord } = require('../mongodb');
+const { ReadConcern } = require('../mongodb');
+const { WriteConcern } = require('../mongodb');
+const { ReadPreference } = require('../mongodb');
+const { MongoCredentials } = require('../mongodb');
+const { MongoClient, MongoParseError, ServerApiVersion } = require('../mongodb');
+const { MongoLogger } = require('../mongodb');
+const sinon = require('sinon');
+const { Writable } = require('stream');
 
 describe('MongoOptions', function () {
   it('MongoClient should always freeze public options', function () {
@@ -95,8 +96,6 @@ describe('MongoOptions', function () {
     keepAlive: true,
     keepAliveInitialDelay: 3,
     localThresholdMS: 3,
-    logger: new Logger('Testing!'),
-    loggerLevel: 'info',
     maxConnecting: 5,
     maxIdleTimeMS: 3,
     maxPoolSize: 2,
@@ -110,7 +109,6 @@ describe('MongoOptions', function () {
         return 'very unique';
       }
     },
-    promiseLibrary: global.Promise,
     promoteBuffers: true,
     promoteLongs: false,
     promoteValues: false,
@@ -614,7 +612,6 @@ describe('MongoOptions', function () {
       ['keepalive', true],
       ['keepaliveinitialdelay', 120000],
       ['localthresholdms', 15],
-      ['logger', doNotCheckEq],
       ['maxidletimems', 0],
       ['maxpoolsize', 100],
       ['minpoolsize', 0],
@@ -774,28 +771,21 @@ describe('MongoOptions', function () {
   });
 
   it('srvServiceName should error if it is too long', async () => {
-    let thrownError;
-    let options;
-    try {
-      options = parseOptions('mongodb+srv://localhost.a.com', { srvServiceName: 'a'.repeat(255) });
-      await promisify(resolveSRVRecord)(options);
-    } catch (error) {
-      thrownError = error;
-    }
-    expect(thrownError).to.have.property('code', 'EBADNAME');
+    const options = parseOptions('mongodb+srv://localhost.a.com', {
+      srvServiceName: 'a'.repeat(255)
+    });
+    const error = await resolveSRVRecord(options).catch(error => error);
+    expect(error).to.have.property('code', 'EBADNAME');
   });
 
   it('srvServiceName should not error if it is greater than 15 characters as long as the DNS query limit is not surpassed', async () => {
-    let thrownError;
-    let options;
-    try {
-      options = parseOptions('mongodb+srv://localhost.a.com', { srvServiceName: 'a'.repeat(16) });
-      await promisify(resolveSRVRecord)(options);
-    } catch (error) {
-      thrownError = error;
-    }
+    const options = parseOptions('mongodb+srv://localhost.a.com', {
+      srvServiceName: 'a'.repeat(16)
+    });
+    const error = await resolveSRVRecord(options).catch(error => error);
+
     // Nothing wrong with the name, just DNE
-    expect(thrownError).to.have.property('code', 'ENOTFOUND');
+    expect(error).to.have.property('code', 'ENOTFOUND');
   });
 
   describe('dbName and authSource', () => {
@@ -854,6 +844,28 @@ describe('MongoOptions', function () {
         expect(db).to.have.property('databaseName', 'myDb');
         expect(client).to.have.nested.property('options.credentials.source', 'myAuthDb');
       });
+    });
+  });
+
+  context('loggingOptions', function () {
+    const expectedLoggingObject = {
+      maxDocumentLength: 20,
+      logDestination: new Writable()
+    };
+
+    before(() => {
+      sinon.stub(MongoLogger, 'resolveOptions').callsFake(() => {
+        return expectedLoggingObject;
+      });
+    });
+
+    after(() => {
+      sinon.restore();
+    });
+
+    it('assigns the parsed options to the mongoLoggerOptions option', function () {
+      const client = new MongoClient('mongodb://localhost:27017');
+      expect(client.options).to.have.property('mongoLoggerOptions').to.equal(expectedLoggingObject);
     });
   });
 });

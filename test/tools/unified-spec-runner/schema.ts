@@ -1,9 +1,14 @@
-import { FindCursor, MongoClient, ServerApiVersion } from '../../../src';
-import type { Document, ObjectId } from '../../../src/bson';
-import type { ReadConcernLevel } from '../../../src/read_concern';
-import type { ReadPreferenceMode } from '../../../src/read_preference';
-import type { TagSet } from '../../../src/sdam/server_description';
-import type { W } from '../../../src/write_concern';
+import type {
+  Document,
+  MongoLoggableComponent,
+  ObjectId,
+  ReadConcernLevel,
+  ReadPreferenceMode,
+  SeverityLevel,
+  TagSet,
+  W
+} from '../../mongodb';
+import { FindCursor, MongoClient, ServerApiVersion } from '../../mongodb';
 import { TestConfiguration } from '../runner/config';
 import { UnifiedThread } from './entities';
 
@@ -69,7 +74,7 @@ export const OperationNames = [
   'removeKeyAltName',
   'getKeyByAltName'
 ] as const;
-export type OperationName = typeof OperationNames[number];
+export type OperationName = (typeof OperationNames)[number];
 
 export interface OperationDescription {
   name: OperationName;
@@ -97,7 +102,8 @@ export const TopologyType = Object.freeze({
   shardedReplicaset: 'sharded-replicaset',
   loadBalanced: 'load-balanced'
 } as const);
-export type TopologyId = typeof TopologyType[keyof typeof TopologyType];
+
+export type TopologyId = (typeof TopologyType)[keyof typeof TopologyType];
 export interface RunOnRequirement {
   serverless?: 'forbid' | 'allow' | 'require';
   auth?: boolean;
@@ -114,6 +120,7 @@ export type ObservableCommandEventId =
 export type ObservableCmapEventId =
   | 'connectionPoolCreatedEvent'
   | 'connectionPoolClosedEvent'
+  | 'connectionPoolReadyEvent'
   | 'connectionPoolClearedEvent'
   | 'connectionCreatedEvent'
   | 'connectionReadyEvent'
@@ -128,8 +135,10 @@ export interface ClientEntity {
   uriOptions?: Document;
   useMultipleMongoses?: boolean;
   observeEvents?: (ObservableCommandEventId | ObservableCmapEventId)[];
+  observeLogMessages?: Record<MongoLoggableComponent, SeverityLevel>;
   ignoreCommandMonitoringEvents?: string[];
   serverApi?: ServerApi;
+  observeSensitiveCommands?: boolean;
 }
 export interface DatabaseEntity {
   id: string;
@@ -237,6 +246,7 @@ export interface Test {
   skipReason?: string;
   operations: OperationDescription[];
   expectEvents?: ExpectedEventsForClient[];
+  expectLogMessages?: ExpectedLogMessagesForClient[];
   outcome?: CollectionData[];
 }
 export interface ExpectedEventsForClient {
@@ -247,6 +257,11 @@ export interface ExpectedEventsForClient {
 }
 
 export type ExpectedEvent = ExpectedCommandEvent | ExpectedCmapEvent | ExpectedSdamEvent;
+
+export interface ExpectedLogMessagesForClient {
+  client: string;
+  messages: ExpectedLogMessage[];
+}
 
 export interface ExpectedCommandEvent {
   commandStartedEvent?: {
@@ -268,6 +283,7 @@ export interface ExpectedCmapEvent {
   poolClearedEvent?: {
     serviceId?: ObjectId;
     hasServiceId?: boolean;
+    interruptInUseConnections?: boolean;
   };
   poolClosedEvent?: Record<string, never>;
   connectionCreatedEvent?: Record<string, never>;
@@ -300,6 +316,13 @@ export interface ExpectedError {
   errorLabelsContain?: string[];
   errorLabelsOmit?: string[];
   expectResult?: unknown;
+}
+
+export interface ExpectedLogMessage {
+  level: SeverityLevel;
+  component: MongoLoggableComponent;
+  failureIsRedacted?: boolean;
+  data: Document;
 }
 
 /**

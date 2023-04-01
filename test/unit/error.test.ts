@@ -1,35 +1,37 @@
 import { expect } from 'chai';
 import { setTimeout } from 'timers';
 
+// Exception to the import from mongodb rule we're unit testing our public Errors API
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import * as importsFromErrorSrc from '../../src/error';
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
+import * as importsFromEntryPoint from '../../src/index';
 import {
-  PoolClosedError as MongoPoolClosedError,
-  WaitQueueTimeoutError as MongoWaitQueueTimeoutError
-} from '../../src/cmap/errors';
-import {
+  isHello,
   isResumableError,
   isRetryableReadError,
   isSDAMUnrecoverableError,
   LEGACY_NOT_PRIMARY_OR_SECONDARY_ERROR_MESSAGE,
   LEGACY_NOT_WRITABLE_PRIMARY_ERROR_MESSAGE,
   MONGODB_ERROR_CODES,
-  MongoErrorLabel,
-  MongoNetworkTimeoutError,
-  MongoSystemError,
-  needsRetryableWriteLabel,
-  NODE_IS_RECOVERING_ERROR_MESSAGE
-} from '../../src/error';
-import * as importsFromErrorSrc from '../../src/error';
-import {
   MongoError,
+  MongoErrorLabel,
   MongoNetworkError,
+  MongoNetworkTimeoutError,
   MongoParseError,
   MongoServerError,
+  MongoSystemError,
   MongoWriteConcernError,
-  TopologyDescription
-} from '../../src/index';
-import * as importsFromEntryPoint from '../../src/index';
-import { Topology, TopologyOptions } from '../../src/sdam/topology';
-import { isHello, ns, setDifference } from '../../src/utils';
+  needsRetryableWriteLabel,
+  NODE_IS_RECOVERING_ERROR_MESSAGE,
+  ns,
+  PoolClosedError as MongoPoolClosedError,
+  setDifference,
+  Topology,
+  TopologyDescription,
+  TopologyOptions,
+  WaitQueueTimeoutError as MongoWaitQueueTimeoutError
+} from '../mongodb';
 import { ReplSetFixture } from '../tools/common';
 import { cleanup } from '../tools/mongodb-mock/index';
 import { getSymbolFrom } from '../tools/utils';
@@ -90,10 +92,12 @@ describe('MongoErrors', () => {
 
     it('should accept an Error object', () => {
       const errorMessage = 'A test error';
-      const err = new MongoError(new Error(errorMessage));
+      const inputError = new Error(errorMessage);
+      const err = new MongoError(inputError);
       expect(err).to.be.an.instanceof(Error);
       expect(err.name).to.equal('MongoError');
       expect(err.message).to.equal(errorMessage);
+      expect(err).to.have.property('cause', inputError);
     });
   });
 
@@ -377,7 +381,7 @@ describe('MongoErrors', () => {
 
       makeAndConnectReplSet((err, topology) => {
         // cleanup the server before calling done
-        const cleanup = err => topology.close(err2 => done(err || err2));
+        const cleanup = err => topology.close({}, err2 => done(err || err2));
 
         if (err) {
           return cleanup(err);

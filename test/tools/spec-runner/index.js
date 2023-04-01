@@ -5,10 +5,15 @@ const chai = require('chai');
 
 const expect = chai.expect;
 const { EJSON } = require('bson');
-const { isRecord } = require('../../../src/utils');
+const { isRecord } = require('../../mongodb');
 const TestRunnerContext = require('./context').TestRunnerContext;
 const resolveConnectionString = require('./utils').resolveConnectionString;
-const { LEGACY_HELLO_COMMAND } = require('../../../src/constants');
+const {
+  LEGACY_HELLO_COMMAND,
+  CMAP_EVENTS: SOURCE_CMAP_EVENTS,
+  TOPOLOGY_EVENTS,
+  HEARTBEAT_EVENTS
+} = require('../../mongodb');
 const { isAnyRequirementSatisfied } = require('../unified-spec-runner/unified-utils');
 const ClientSideEncryptionFilter = require('../runner/filters/client_encryption_filter');
 
@@ -136,6 +141,9 @@ function legacyRunOnToRunOnRequirement(runOn) {
   return runOnRequirement;
 }
 
+/**
+ * @param {((test: { description: string }) => boolean)?} filter a function that returns true for any tests that should run, false otherwise.
+ */
 function generateTopologyTests(testSuites, testContext, filter) {
   for (const testSuite of testSuites) {
     let runOn = testSuite.runOn;
@@ -163,17 +171,6 @@ function generateTopologyTests(testSuites, testContext, filter) {
       let shouldRun = someRequirementMet;
 
       const { spec } = this.currentTest;
-
-      if (
-        shouldRun &&
-        spec.operations.some(
-          op => op.name === 'waitForEvent' && op.arguments.event === 'PoolReadyEvent'
-        )
-      ) {
-        this.currentTest.skipReason =
-          'TODO(NODE-2994): Connection storms work will add new events to connection pool';
-        shouldRun = false;
-      }
 
       if (shouldRun && spec.skipReason) {
         this.currentTest.skipReason = spec.skipReason;
@@ -335,29 +332,11 @@ function parseSessionOptions(options) {
 
 const IGNORED_COMMANDS = new Set([LEGACY_HELLO_COMMAND, 'configureFailPoint', 'endSessions']);
 const SDAM_EVENTS = new Set([
-  'serverOpening',
-  'serverClosed',
-  'serverDescriptionChanged',
-  'topologyOpening',
-  'topologyClosed',
-  'topologyDescriptionChanged',
-  'serverHeartbeatStarted',
-  'serverHeartbeatSucceeded',
-  'serverHeartbeatFailed'
+  ...TOPOLOGY_EVENTS.filter(ev => !['error', 'timeout', 'close'].includes(ev)),
+  ...HEARTBEAT_EVENTS
 ]);
 
-const CMAP_EVENTS = new Set([
-  'connectionPoolCreated',
-  'connectionPoolClosed',
-  'connectionCreated',
-  'connectionReady',
-  'connectionClosed',
-  'connectionCheckOutStarted',
-  'connectionCheckOutFailed',
-  'connectionCheckedOut',
-  'connectionCheckedIn',
-  'connectionPoolCleared'
-]);
+const CMAP_EVENTS = new Set(SOURCE_CMAP_EVENTS);
 
 function runTestSuiteTest(configuration, spec, context) {
   context.commandEvents = [];
@@ -723,13 +702,11 @@ const kOperations = new Map([
   ],
   [
     'mapReduce',
+    // eslint-disable-next-line no-unused-vars
     (operation, collection, context /*, options */) => {
-      const args = operation.arguments;
-      const map = args.map;
-      const reduce = args.reduce;
-      const options = { session: maybeSession(operation, context) };
-      if (args.out) options.out = args.out;
-      return collection.mapReduce(map, reduce, options);
+      throw new Error(
+        'The Node driver no longer supports a MapReduce helper.  This operation should never be run.'
+      );
     }
   ],
   [
@@ -836,10 +813,6 @@ function testOperation(operation, obj, context, options) {
           }
 
           if (['filter', 'fieldName', 'document', 'documents', 'pipeline'].indexOf(key) !== -1) {
-            return args.unshift(operation.arguments[key]);
-          }
-
-          if ((key === 'map' || key === 'reduce') && operationName === 'mapReduce') {
             return args.unshift(operation.arguments[key]);
           }
 

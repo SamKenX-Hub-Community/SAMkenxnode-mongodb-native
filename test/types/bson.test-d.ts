@@ -1,12 +1,13 @@
 import { expectType } from 'tsd';
 
-import type { BSONSerializeOptions, Document } from '../../src/bson';
+import type { BSONSerializeOptions, Document } from '../mongodb';
 
 const options: BSONSerializeOptions = {};
 
 expectType<boolean | undefined>(options.checkKeys);
 expectType<boolean | undefined>(options.serializeFunctions);
 expectType<boolean | undefined>(options.ignoreUndefined);
+expectType<boolean | undefined>(options.useBigInt64);
 expectType<boolean | undefined>(options.promoteLongs);
 expectType<boolean | undefined>(options.promoteBuffers);
 expectType<boolean | undefined>(options.promoteValues);
@@ -17,6 +18,7 @@ type PermittedBSONOptionKeys =
   | 'checkKeys'
   | 'serializeFunctions'
   | 'ignoreUndefined'
+  | 'useBigInt64'
   | 'promoteLongs'
   | 'promoteBuffers'
   | 'promoteValues'

@@ -8,7 +8,7 @@ import {
   MongoClient,
   MongoDriverError,
   MongoInvalidArgumentError
-} from '../../../src';
+} from '../../mongodb';
 import { assert as test, ignoreNsNotFound } from '../shared';
 
 const MAX_BSON_SIZE = 16777216;
@@ -107,37 +107,35 @@ describe('Bulk', function () {
     });
   });
 
-  context('promise tests', () => {
-    it('Should correctly execute unordered bulk operation in promise form', async function () {
-      const db = client.db();
-      const bulk = db
-        .collection('unordered_bulk_promise_form')
-        .initializeUnorderedBulkOp({ writeConcern: { w: 1 } });
-      bulk.insert({ a: 1 });
+  it('Should correctly execute unordered bulk operation', async function () {
+    const db = client.db();
+    const bulk = db
+      .collection('unordered_bulk_promise_form')
+      .initializeUnorderedBulkOp({ writeConcern: { w: 1 } });
+    bulk.insert({ a: 1 });
 
-      const r = await bulk.execute();
-      test.ok(r);
-      test.deepEqual({ w: 1 }, bulk.s.writeConcern);
-    });
+    const r = await bulk.execute();
+    test.ok(r);
+    test.deepEqual({ w: 1 }, bulk.s.writeConcern);
+  });
 
-    it('Should correctly execute ordered bulk operation in promise form', async function () {
-      const db = client.db();
-      const bulk = db
-        .collection('unordered_bulk_promise_form')
-        .initializeOrderedBulkOp({ writeConcern: { w: 1 } });
-      bulk.insert({ a: 1 });
+  it('Should correctly execute ordered bulk operation', async function () {
+    const db = client.db();
+    const bulk = db
+      .collection('unordered_bulk_promise_form')
+      .initializeOrderedBulkOp({ writeConcern: { w: 1 } });
+    bulk.insert({ a: 1 });
 
-      const r = await bulk.execute();
-      test.ok(r);
-      test.deepEqual({ w: 1 }, bulk.s.writeConcern);
-    });
+    const r = await bulk.execute();
+    test.ok(r);
+    test.deepEqual({ w: 1 }, bulk.s.writeConcern);
+  });
 
-    it('Should correctly handle bulkWrite with no options', async function () {
-      const db = client.db();
-      const col = db.collection('find_one_and_replace_with_promise_no_option');
-      const result = await col.bulkWrite([{ insertOne: { document: { a: 1 } } }]);
-      expect(result).to.exist;
-    });
+  it('Should correctly handle bulkWrite with no options', async function () {
+    const db = client.db();
+    const col = db.collection('find_one_and_replace_with_promise_no_option');
+    const result = await col.bulkWrite([{ insertOne: { document: { a: 1 } } }]);
+    expect(result).to.exist;
   });
 
   it('should correctly handle ordered single batch api write command error', function (done) {
@@ -1688,6 +1686,51 @@ describe('Bulk', function () {
     }
   });
 
+  it('should apply hint via FindOperators', {
+    metadata: { requires: { mongodb: '>= 4.4' } },
+    async test() {
+      const bulk = client.db().collection('coll').initializeOrderedBulkOp();
+
+      const events = [];
+      client.on('commandStarted', event => {
+        if (['update', 'delete'].includes(event.commandName)) {
+          events.push(event);
+        }
+      });
+
+      // updates
+      bulk
+        .find({ b: 1 })
+        .hint({ b: 1 })
+        .updateOne({ $set: { b: 2 } });
+      bulk
+        .find({ b: 2 })
+        .hint({ b: 1 })
+        .update({ $set: { b: 3 } });
+      bulk.find({ b: 3 }).hint({ b: 1 }).replaceOne({ b: 2 });
+
+      // deletes
+      bulk.find({ b: 2 }).hint({ b: 1 }).deleteOne();
+      bulk.find({ b: 1 }).hint({ b: 1 }).delete();
+
+      await bulk.execute();
+
+      expect(events).to.be.an('array').with.length.at.least(1);
+      expect(events[0]).property('commandName').to.equal('update');
+      const updateCommand = events[0].command;
+      expect(updateCommand).property('updates').to.be.an('array').with.length(3);
+      updateCommand.updates.forEach(statement => {
+        expect(statement).property('hint').to.eql({ b: 1 });
+      });
+      expect(events[1]).property('commandName').to.equal('delete');
+      const deleteCommand = events[1].command;
+      expect(deleteCommand).property('deletes').to.be.an('array').with.length(2);
+      deleteCommand.deletes.forEach(statement => {
+        expect(statement).property('hint').to.eql({ b: 1 });
+      });
+    }
+  });
+
   it('should apply arrayFilters to bulk updates via FindOperators', {
     metadata: { requires: { mongodb: '>= 3.6' } },
     test: function (done) {
@@ -1734,6 +1777,24 @@ describe('Bulk', function () {
           });
         });
       });
+    }
+  });
+
+  it('should accept pipeline-style updates', {
+    metadata: { requires: { mongodb: '>= 4.2' } },
+    async test() {
+      const coll = client.db().collection('coll');
+      const bulk = coll.initializeOrderedBulkOp();
+
+      await coll.insertMany([{ a: 1 }, { a: 2 }]);
+
+      bulk.find({ a: 1 }).updateOne([{ $project: { a: { $add: ['$a', 10] } } }]);
+      bulk.find({ a: 2 }).update([{ $project: { a: { $add: ['$a', 100] } } }]);
+
+      await bulk.execute();
+
+      const contents = await coll.find().project({ _id: 0 }).toArray();
+      expect(contents).to.deep.equal([{ a: 11 }, { a: 102 }]);
     }
   });
 

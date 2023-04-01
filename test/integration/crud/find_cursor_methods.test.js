@@ -4,7 +4,8 @@ const { filterForCommands } = require('../shared');
 
 describe('Find Cursor', function () {
   let client;
-  before(async function () {
+
+  beforeEach(async function () {
     const setupClient = this.configuration.newClient();
     const docs = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }, { a: 5 }, { a: 6 }];
     const coll = setupClient.db().collection('abstract_cursor');
@@ -40,79 +41,125 @@ describe('Find Cursor', function () {
     });
   });
 
-  context('#readBufferedDocuments', function () {
-    it('should support reading buffered documents', function (done) {
+  describe('#readBufferedDocuments', function () {
+    let cursor;
+    beforeEach(async () => {
       const coll = client.db().collection('abstract_cursor');
-      const cursor = coll.find({}, { batchSize: 5 });
+      cursor = coll.find({}, { batchSize: 5 });
+      await cursor.hasNext(); // fetch firstBatch
+    });
 
-      cursor.next((err, doc) => {
-        expect(err).to.not.exist;
-        expect(doc).property('a').to.equal(1);
-        expect(cursor.bufferedCount()).to.equal(4);
+    it('should remove buffered documents from subsequent cursor iterations', async () => {
+      const [doc] = cursor.readBufferedDocuments(1);
+      expect(doc).to.have.property('a', 1);
 
-        // Read the buffered Count
-        cursor.readBufferedDocuments(cursor.bufferedCount());
+      const nextDoc = await cursor.next();
+      expect(nextDoc).to.have.property('a', 2);
+    });
 
-        // Get the next item
-        cursor.next((err, doc) => {
-          expect(err).to.not.exist;
-          expect(doc).to.exist;
+    it('should return the amount of documents requested', async () => {
+      const buf1 = cursor.readBufferedDocuments(1);
+      expect(buf1).to.be.lengthOf(1);
 
-          cursor.next((err, doc) => {
-            expect(err).to.not.exist;
-            expect(doc).to.be.null;
+      const buf2 = cursor.readBufferedDocuments(3);
+      expect(buf2).to.be.lengthOf(3);
+    });
 
-            done();
-          });
-        });
-      });
+    it('should bound the request by the maximum amount of documents currently buffered', async () => {
+      const buf1 = cursor.readBufferedDocuments(1000);
+      expect(buf1).to.be.lengthOf(5);
+
+      const buf2 = cursor.readBufferedDocuments(23);
+      expect(buf2).to.be.lengthOf(0);
+    });
+
+    it('should return all buffered documents when no argument is passed', async () => {
+      const buf1 = cursor.readBufferedDocuments();
+      expect(buf1).to.be.lengthOf(5);
+
+      const buf2 = cursor.readBufferedDocuments();
+      expect(buf2).to.be.lengthOf(0);
+    });
+
+    it('should return empty array for size zero or less', async () => {
+      const buf1 = cursor.readBufferedDocuments(0);
+      expect(buf1).to.be.lengthOf(0);
+
+      const buf2 = cursor.readBufferedDocuments(-23);
+      expect(buf2).to.be.lengthOf(0);
+    });
+
+    it('should return the same amount of documents reported by bufferedCount', async function () {
+      const doc = await cursor.next();
+      expect(doc).property('a', 1);
+
+      const bufferedCount = cursor.bufferedCount();
+      expect(bufferedCount).to.equal(4);
+
+      // Read the buffered Count
+      const bufferedDocs = cursor.readBufferedDocuments(bufferedCount);
+      expect(bufferedDocs.map(({ a }) => a)).to.deep.equal([2, 3, 4, 5]);
+
+      const doc2 = await cursor.next();
+      expect(doc2).to.have.property('a', 6);
+
+      const doc3 = await cursor.next();
+      expect(doc3).to.be.null;
     });
   });
 
-  context('#close', function () {
-    it('should send a killCursors command when closed before completely iterated', function (done) {
-      const commands = [];
-      client.on('commandStarted', filterForCommands(['killCursors'], commands));
+  describe('#close', function () {
+    let collection;
 
-      const coll = client.db().collection('abstract_cursor');
-      const cursor = coll.find({}, { batchSize: 2 });
-      cursor.next(err => {
-        expect(err).to.not.exist;
-        cursor.close(err => {
-          expect(err).to.not.exist;
-          expect(commands).to.have.length(1);
-          done();
-        });
+    beforeEach(async function () {
+      collection = client.db().collection('abstract_cursor');
+      await collection.drop().catch(() => null);
+      await collection.insertMany([{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }]);
+    });
+
+    afterEach(async function () {
+      await collection?.drop().catch(() => null);
+    });
+
+    context('when closed before completely iterated', () => {
+      it('sends a killCursors command', async () => {
+        const killCursorsCommands = [];
+        client.on('commandStarted', filterForCommands(['killCursors'], killCursorsCommands));
+
+        const cursor = collection.find({}, { batchSize: 2 });
+
+        const doc = await cursor.next();
+        expect(doc).property('a', 1);
+
+        expect(killCursorsCommands).to.have.length(0);
+        await cursor.close();
+        expect(killCursorsCommands).to.have.length(1);
       });
     });
 
-    it('should not send a killCursors command when closed after completely iterated', function (done) {
-      const commands = [];
-      client.on('commandStarted', filterForCommands(['killCursors'], commands));
+    context('when closed after completely iterated', () => {
+      it('does not send a killCursors command', async () => {
+        const killCursorsCommands = [];
+        client.on('commandStarted', filterForCommands(['killCursors'], killCursorsCommands));
 
-      const coll = client.db().collection('abstract_cursor');
-      const cursor = coll.find({}, { batchSize: 2 });
-      cursor.toArray(err => {
-        expect(err).to.not.exist;
-
-        cursor.close(err => {
-          expect(err).to.not.exist;
-          expect(commands).to.have.length(0);
-          done();
-        });
+        const cursor = collection.find();
+        await cursor.toArray();
+        expect(killCursorsCommands).to.have.length(0);
+        await cursor.close();
+        expect(killCursorsCommands).to.have.length(0);
       });
     });
 
-    it('should not send a killCursors command when closed before initialization', function (done) {
-      const commands = [];
-      client.on('commandStarted', filterForCommands(['killCursors'], commands));
+    context('when closed before initialization', () => {
+      it('does not send a killCursors command', async () => {
+        const killCursorsCommands = [];
+        client.on('commandStarted', filterForCommands(['killCursors'], killCursorsCommands));
 
-      const coll = client.db().collection('abstract_cursor');
-      const cursor = coll.find({}, { batchSize: 2 });
-      cursor.close(err => {
-        expect(err).to.not.exist;
-        expect(commands).to.have.length(0);
-        done();
+        const cursor = collection.find();
+
+        expect(killCursorsCommands).to.have.length(0);
+        await cursor.close();
+        expect(killCursorsCommands).to.have.length(0);
       });
     });
   });
@@ -166,48 +213,32 @@ describe('Find Cursor', function () {
   });
 
   context('#clone', function () {
-    it('should clone a find cursor', function (done) {
+    it('should clone a find cursor', async function () {
       const coll = client.db().collection('abstract_cursor');
       const cursor = coll.find({});
-      this.defer(() => cursor.close());
 
-      cursor.toArray((err, docs) => {
-        expect(err).to.not.exist;
-        expect(docs).to.have.length(6);
-        expect(cursor).property('closed').to.be.true;
+      const docsFromOriginal = await cursor.toArray();
+      expect(docsFromOriginal).to.have.length(6);
+      expect(cursor).property('closed').to.be.true;
 
-        const clonedCursor = cursor.clone();
-        this.defer(() => clonedCursor.close());
-
-        clonedCursor.toArray((err, docs) => {
-          expect(err).to.not.exist;
-          expect(docs).to.have.length(6);
-          expect(clonedCursor).property('closed').to.be.true;
-          done();
-        });
-      });
+      const clonedCursor = cursor.clone();
+      const docsFromCloned = await clonedCursor.toArray();
+      expect(docsFromCloned).to.have.length(6);
+      expect(cursor).property('closed').to.be.true;
     });
 
-    it('should clone an aggregate cursor', function (done) {
+    it('should clone an aggregate cursor', async function () {
       const coll = client.db().collection('abstract_cursor');
       const cursor = coll.aggregate([{ $match: {} }]);
-      this.defer(() => cursor.close());
 
-      cursor.toArray((err, docs) => {
-        expect(err).to.not.exist;
-        expect(docs).to.have.length(6);
-        expect(cursor).property('closed').to.be.true;
+      const docsFromOriginal = await cursor.toArray();
+      expect(docsFromOriginal).to.have.length(6);
+      expect(cursor).property('closed').to.be.true;
 
-        const clonedCursor = cursor.clone();
-        this.defer(() => clonedCursor.close());
-
-        clonedCursor.toArray((err, docs) => {
-          expect(err).to.not.exist;
-          expect(docs).to.have.length(6);
-          expect(clonedCursor).property('closed').to.be.true;
-          done();
-        });
-      });
+      const clonedCursor = cursor.clone();
+      const docsFromCloned = await clonedCursor.toArray();
+      expect(docsFromCloned).to.have.length(6);
+      expect(cursor).property('closed').to.be.true;
     });
   });
 

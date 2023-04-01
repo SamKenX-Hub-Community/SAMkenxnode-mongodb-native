@@ -1,6 +1,7 @@
 import * as path from 'path';
 
 import { loadSpecTests } from '../../spec';
+import { installNodeDNSWorkaroundHooks } from '../../tools/runner/hooks/configuration';
 import {
   gatherTestSuites,
   generateTopologyTests,
@@ -34,14 +35,6 @@ const skippedAuthTests = [
   'unset works with an encrypted field',
   'updateOne with deterministic encryption',
   'updateMany with deterministic encryption',
-  'type=date',
-  'type=regex',
-  'type=timestamp',
-  'type=javascript',
-  'type=binData',
-  'type=int',
-  'type=objectId',
-  'type=symbol',
   'replaceOne with encryption',
   'Insert with encryption on a missing key',
   'A local schema should override',
@@ -60,8 +53,14 @@ const skippedAuthTests = [
 const skippedNoAuthTests = ['getMore with encryption', 'operation fails with maxWireVersion < 8'];
 
 const SKIPPED_TESTS = new Set([
-  ...(isAuthEnabled ? skippedAuthTests.concat(skippedNoAuthTests) : skippedNoAuthTests)
+  ...(isAuthEnabled ? skippedAuthTests.concat(skippedNoAuthTests) : skippedNoAuthTests),
+  ...[
+    // the node driver does not have a mapReduce helper
+    'mapReduce deterministic encryption (unsupported)'
+  ]
 ]);
+
+const isServerless = !!process.env.SERVERLESS;
 
 describe('Client Side Encryption (Legacy)', function () {
   const testContext = new TestRunnerContext({ requiresCSFLE: true });
@@ -69,16 +68,34 @@ describe('Client Side Encryption (Legacy)', function () {
     path.join(__dirname, '../../spec/client-side-encryption/tests/legacy'),
     testContext
   );
+
+  installNodeDNSWorkaroundHooks();
   after(() => testContext.teardown());
   before(function () {
     return testContext.setup(this.configuration);
   });
 
-  generateTopologyTests(testSuites, testContext, spec => {
-    return !SKIPPED_TESTS.has(spec.description);
+  generateTopologyTests(testSuites, testContext, ({ description }) => {
+    if (SKIPPED_TESTS.has(description)) {
+      return false;
+    }
+    if (isServerless) {
+      // TODO(NODE-4730): Fix failing csfle tests against serverless
+      const isSkippedTest = [
+        'BypassQueryAnalysis decrypts',
+        'encryptedFieldsMap is preferred over remote encryptedFields'
+      ].includes(description);
+
+      return !isSkippedTest;
+    }
+
+    return true;
   });
 });
 
 describe('Client Side Encryption (Unified)', function () {
-  runUnifiedSuite(loadSpecTests(path.join('client-side-encryption', 'tests', 'unified')));
+  installNodeDNSWorkaroundHooks();
+  runUnifiedSuite(loadSpecTests(path.join('client-side-encryption', 'tests', 'unified')), () =>
+    isServerless ? 'Unified CSFLE tests to not run on serverless' : false
+  );
 });

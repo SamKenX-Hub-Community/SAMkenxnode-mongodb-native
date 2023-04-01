@@ -8,13 +8,13 @@ import {
   CommandStartedEvent,
   CommandSucceededEvent,
   Document,
+  isHello,
+  LEGACY_HELLO_COMMAND,
   Long,
   MongoNetworkError,
   ObjectId,
   Timestamp
-} from '../../../src';
-import { LEGACY_HELLO_COMMAND } from '../../../src/constants';
-import { isHello } from '../../../src/utils';
+} from '../../mongodb';
 import * as mock from '../../tools/mongodb-mock/index';
 import { setupDatabase } from '../shared';
 
@@ -37,7 +37,7 @@ function triggerResumableError(
   }
 
   const stub = sinon.stub(changeStream.cursor, 'close');
-  stub.callsFake(function () {
+  stub.callsFake(async function () {
     stub.wrappedMethod.call(this);
     stub.restore();
     onClose();
@@ -50,7 +50,7 @@ function triggerResumableError(
       return;
     }
 
-    const nextStub = sinon.stub(changeStream.cursor, 'next').callsFake(function (callback) {
+    const nextStub = sinon.stub(changeStream.cursor, 'next').callsFake(async function () {
       callback(new MongoNetworkError('error triggered from test'));
       nextStub.restore();
     });
@@ -429,7 +429,7 @@ describe('Change Stream prose tests', function () {
 
       // Helpers
       timestamp() {
-        return new Timestamp(this._timestampCounter++, Date.now());
+        return new Timestamp({ i: this._timestampCounter++, t: this._timestampCounter });
       }
 
       applyOpTime(obj) {

@@ -8,10 +8,11 @@ const { expect } = require('chai');
 const BSON = require('bson');
 const sinon = require('sinon');
 const { Writable } = require('stream');
+const { once, on } = require('events');
 const { setTimeout } = require('timers');
-const { ReadPreference } = require('../../../src/read_preference');
-const { ServerType } = require('../../../src/sdam/common');
-const { formatSort } = require('../../../src/sort');
+const { ReadPreference, MongoExpiredSessionError } = require('../../mongodb');
+const { ServerType } = require('../../mongodb');
+const { formatSort } = require('../../mongodb');
 const { getSymbolFrom } = require('../../tools/utils');
 
 describe('Cursor', function () {
@@ -31,50 +32,28 @@ describe('Cursor', function () {
     await client.close();
   });
 
-  it('cursorShouldBeAbleToResetOnToArrayRunningQueryAgain', {
-    // Add a tag that our runner can trigger on
-    // in this case we are setting that node needs to be higher than 0.10.X to run
-    metadata: {
-      requires: { topology: ['single', 'replicaset', 'sharded'] }
-    },
+  it('should not throw an error when toArray and forEach are called after cursor is closed', async function () {
+    const db = client.db();
 
-    test: function (done) {
-      const configuration = this.configuration;
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
-        this.defer(() => client.close());
+    const collection = await db.collection('test_to_a');
+    await collection.insertMany([{ a: 1 }]);
+    const cursor = collection.find({});
 
-        const db = client.db(configuration.db);
-        db.createCollection('test_to_a', (err, collection) => {
-          expect(err).to.not.exist;
+    const firstToArray = await cursor.toArray().catch(error => error);
+    expect(firstToArray).to.be.an('array');
 
-          collection.insert({ a: 1 }, configuration.writeConcernMax(), err => {
-            expect(err).to.not.exist;
+    expect(cursor.closed).to.be.true;
 
-            const cursor = collection.find({});
-            this.defer(() => cursor.close());
+    const secondToArray = await cursor.toArray().catch(error => error);
+    expect(secondToArray).to.be.an('array');
+    expect(secondToArray).to.have.lengthOf(0);
 
-            cursor.toArray(err => {
-              expect(err).to.not.exist;
-
-              // Should fail if called again (cursor should be closed)
-              cursor.toArray(err => {
-                expect(err).to.not.exist;
-
-                // Should fail if called again (cursor should be closed)
-                cursor.forEach(
-                  () => {},
-                  err => {
-                    expect(err).to.not.exist;
-                    done();
-                  }
-                );
-              });
-            });
-          });
-        });
-      });
-    }
+    const forEachResult = await cursor
+      .forEach(() => {
+        expect.fail('should not run forEach on an empty/closed cursor');
+      })
+      .catch(error => error);
+    expect(forEachResult).to.be.undefined;
   });
 
   it('cursor should close after first next operation', {
@@ -264,39 +243,23 @@ describe('Cursor', function () {
     }
   });
 
-  it('Should correctly execute cursor count with secondary readPreference', {
-    // Add a tag that our runner can trigger on
-    // in this case we are setting that node needs to be higher than 0.10.X to run
-    metadata: {
-      requires: { topology: 'replicaset' }
-    },
-
-    test: function (done) {
-      const configuration = this.configuration;
-      const client = configuration.newClient(configuration.writeConcernMax(), {
-        maxPoolSize: 1,
-        monitorCommands: true
-      });
-
+  it('should correctly execute cursor count with secondary readPreference', {
+    metadata: { requires: { topology: 'replicaset' } },
+    async test() {
       const bag = [];
       client.on('commandStarted', filterForCommands(['count'], bag));
 
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
-        this.defer(() => client.close());
+      const cursor = client
+        .db()
+        .collection('countTEST')
+        .find({ qty: { $gt: 4 } });
+      await cursor.count({ readPreference: ReadPreference.SECONDARY });
 
-        const db = client.db(configuration.db);
-        const cursor = db.collection('countTEST').find({ qty: { $gt: 4 } });
-        cursor.count({ readPreference: ReadPreference.SECONDARY }, err => {
-          expect(err).to.not.exist;
-
-          const selectedServerAddress = bag[0].address.replace('127.0.0.1', 'localhost');
-          const selectedServer = client.topology.description.servers.get(selectedServerAddress);
-          expect(selectedServer).property('type').to.equal(ServerType.RSSecondary);
-
-          done();
-        });
-      });
+      const selectedServerAddress = bag[0].address
+        .replace('127.0.0.1', 'localhost')
+        .replace('[::1]', 'localhost');
+      const selectedServer = client.topology.description.servers.get(selectedServerAddress);
+      expect(selectedServer).property('type').to.equal(ServerType.RSSecondary);
     }
   });
 
@@ -1708,122 +1671,68 @@ describe('Cursor', function () {
     }
   });
 
-  it('removes session wheen cloning a find cursor', function (done) {
-    const configuration = this.configuration;
-    client.connect((err, client) => {
-      expect(err).to.not.exist;
+  it('removes session when cloning an find cursor', async function () {
+    const collection = await client.db().collection('test');
 
-      const db = client.db(configuration.db);
-      db.createCollection('clone_find_cursor_session', (err, collection) => {
-        expect(err).to.not.exist;
+    const cursor = collection.find({});
+    const clonedCursor = cursor.clone();
 
-        collection.insertOne({ a: 1 }, configuration.writeConcernMax(), err => {
-          expect(err).to.not.exist;
-
-          const cursor = collection.find();
-          const clonedCursor = cursor.clone();
-          cursor.toArray(err => {
-            expect(err).to.not.exist;
-            clonedCursor.toArray(err => {
-              expect(err).to.not.exist;
-              client.close();
-              done();
-            });
-          });
-        });
-      });
-    });
+    expect(cursor).to.have.property('session');
+    expect(clonedCursor).to.have.property('session');
+    expect(cursor.session).to.not.equal(clonedCursor.session);
   });
 
-  it('removes session wheen cloning an aggregation cursor', {
-    metadata: {
-      requires: { topology: ['single', 'replicaset', 'sharded'] }
-    },
+  it('removes session when cloning an aggregation cursor', async function () {
+    const collection = await client.db().collection('test');
 
-    test: function (done) {
-      const configuration = this.configuration;
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
+    const cursor = collection.aggregate([{ $match: {} }]);
+    const clonedCursor = cursor.clone();
 
-        const db = client.db(configuration.db);
-        db.createCollection('clone_aggregation_cursor_session', (err, collection) => {
-          expect(err).to.not.exist;
-
-          collection.insertOne({ a: 1 }, configuration.writeConcernMax(), err => {
-            expect(err).to.not.exist;
-
-            const cursor = collection.aggregate([{ $match: { a: 1 } }]);
-            const clonedCursor = cursor.clone();
-            cursor.toArray(err => {
-              expect(err).to.not.exist;
-              clonedCursor.toArray(err => {
-                expect(err).to.not.exist;
-                client.close();
-                done();
-              });
-            });
-          });
-        });
-      });
-    }
+    expect(cursor).to.have.property('session');
+    expect(clonedCursor).to.have.property('session');
+    expect(cursor.session).to.not.equal(clonedCursor.session);
   });
 
-  it('destroying a stream stops it', {
-    // Add a tag that our runner can trigger on
-    // in this case we are setting that node needs to be higher than 0.10.X to run
-    metadata: {
-      requires: { topology: ['single', 'replicaset', 'sharded'] }
-    },
+  it('destroying a stream stops it', async function () {
+    const db = client.db();
+    await db.dropCollection('destroying_a_stream_stops_it').catch(() => null);
+    const collection = await db.createCollection('destroying_a_stream_stops_it');
 
-    test: function (done) {
-      const configuration = this.configuration;
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
-        this.defer(() => client.close());
+    const docs = Array.from({ length: 10 }, (_, i) => ({ b: i + 1 }));
 
-        const db = client.db(configuration.db);
-        db.createCollection('destroying_a_stream_stops_it', (err, collection) => {
-          expect(err).to.not.exist;
+    await collection.insertMany(docs);
 
-          var docs = [];
-          for (var ii = 0; ii < 10; ++ii) docs.push({ b: ii + 1 });
+    const cursor = collection.find();
+    const stream = cursor.stream();
 
-          // insert all docs
-          collection.insert(docs, configuration.writeConcernMax(), err => {
-            expect(err).to.not.exist;
+    expect(cursor).property('closed', false);
 
-            var finished = 0,
-              i = 0;
+    const willClose = once(cursor, 'close');
+    const willEnd = once(stream, 'end');
 
-            const cursor = collection.find();
-            const stream = cursor.stream();
+    const dataEvents = on(stream, 'data');
 
-            test.strictEqual(false, cursor.closed);
-
-            stream.on('data', function () {
-              if (++i === 5) {
-                stream.destroy();
-              }
-            });
-
-            cursor.once('close', testDone);
-            stream.once('error', testDone);
-            stream.once('end', testDone);
-
-            function testDone(err) {
-              ++finished;
-              if (finished === 2) {
-                test.strictEqual(undefined, err);
-                test.strictEqual(5, i);
-                test.strictEqual(2, finished);
-                test.strictEqual(true, cursor.closed);
-                done();
-              }
-            }
-          });
-        });
-      });
+    for (let i = 0; i < 5; i++) {
+      let {
+        value: [doc]
+      } = await dataEvents.next();
+      expect(doc).property('b', i + 1);
     }
+
+    // After 5 successful data events, destroy stream
+    stream.destroy();
+
+    // We should get an end event on the stream and a close event on the cursor
+    // We should **not** get an 'error' event,
+    // the following will throw if either stream or cursor emitted an 'error' event
+    await Promise.race([
+      willEnd,
+      sleep(100).then(() => Promise.reject(new Error('end event never emitted')))
+    ]);
+    await Promise.race([
+      willClose,
+      sleep(100).then(() => Promise.reject(new Error('close event never emitted')))
+    ]);
   });
 
   // NOTE: skipped for use of topology manager
@@ -1943,61 +1852,31 @@ describe('Cursor', function () {
     }
   });
 
-  it('should close dead tailable cursors', {
-    metadata: {
-      os: '!win32' // NODE-2943: timeout on windows
-    },
+  it('closes cursors when client is closed even if it has not been exhausted', async function () {
+    await client
+      .db()
+      .dropCollection('test_cleanup_tailable')
+      .catch(() => null);
 
-    test: function (done) {
-      // http://www.mongodb.org/display/DOCS/Tailable+Cursors
+    const collection = await client
+      .db()
+      .createCollection('test_cleanup_tailable', { capped: true, size: 1000, max: 3 });
 
-      const configuration = this.configuration;
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
-        this.defer(() => client.close());
+    // insert only 2 docs in capped coll of 3
+    await collection.insertMany([{ a: 1 }, { a: 1 }]);
 
-        const db = client.db(configuration.db);
-        const options = { capped: true, size: 10000000 };
-        db.createCollection(
-          'test_if_dead_tailable_cursors_close',
-          options,
-          function (err, collection) {
-            expect(err).to.not.exist;
+    const cursor = collection.find({}, { tailable: true, awaitData: true, maxAwaitTimeMS: 2000 });
 
-            let closeCount = 0;
-            const docs = Array.from({ length: 100 }).map(() => ({ a: 1 }));
-            collection.insertMany(docs, { w: 'majority', wtimeoutMS: 5000 }, err => {
-              expect(err).to.not.exist;
+    await cursor.next();
+    await cursor.next();
+    // will block for maxAwaitTimeMS (except we are closing the client)
+    const rejectedEarlyBecauseClientClosed = cursor.next().catch(error => error);
 
-              const cursor = collection.find({}, { tailable: true, awaitData: true });
-              const stream = cursor.stream();
+    await client.close();
+    expect(cursor).to.have.property('killed', true);
 
-              stream.resume();
-
-              var validator = () => {
-                closeCount++;
-                if (closeCount === 2) {
-                  done();
-                }
-              };
-
-              // we validate that the stream "ends" either cleanly or with an error
-              stream.on('end', validator);
-              stream.on('error', validator);
-
-              cursor.on('close', validator);
-
-              const docs = Array.from({ length: 100 }).map(() => ({ a: 1 }));
-              collection.insertMany(docs, err => {
-                expect(err).to.not.exist;
-
-                setTimeout(() => client.close());
-              });
-            });
-          }
-        );
-      });
-    }
+    const error = await rejectedEarlyBecauseClientClosed;
+    expect(error).to.be.instanceOf(MongoExpiredSessionError);
   });
 
   it('shouldAwaitData', {
@@ -2008,7 +1887,7 @@ describe('Cursor', function () {
     },
 
     test: function (done) {
-      // http://www.mongodb.org/display/DOCS/Tailable+Cursors
+      // www.mongodb.com/docs/display/DOCS/Tailable+Cursors
 
       const configuration = this.configuration;
       client.connect((err, client) => {
@@ -2047,7 +1926,7 @@ describe('Cursor', function () {
   });
 
   it('shouldAwaitDataWithDocumentsAvailable', function (done) {
-    // http://www.mongodb.org/display/DOCS/Tailable+Cursors
+    // www.mongodb.com/docs/display/DOCS/Tailable+Cursors
 
     const configuration = this.configuration;
     const client = configuration.newClient({ maxPoolSize: 1 });
@@ -2141,7 +2020,7 @@ describe('Cursor', function () {
     },
 
     test: function (done) {
-      // http://www.mongodb.org/display/DOCS/Tailable+Cursors
+      // www.mongodb.com/docs/display/DOCS/Tailable+Cursors
 
       const configuration = this.configuration;
       client.connect((err, client) => {

@@ -1,7 +1,6 @@
 import { expect } from 'chai';
 
-import { Collection, Db, MongoClient } from '../../../src';
-import { isHello } from '../../../src/utils';
+import { Collection, Db, isHello, MongoClient } from '../../mongodb';
 import * as mock from '../../tools/mongodb-mock/index';
 import { setupDatabase } from '../shared';
 
@@ -227,28 +226,6 @@ describe('Collection', function () {
       );
     });
 
-    it('should perform collection remove with no callback', function (done) {
-      const collection = db.collection('remove_with_no_callback_bug_test');
-      collection.insertOne({ a: 1 }, configuration.writeConcernMax(), err => {
-        expect(err).to.not.exist;
-        collection.insertOne({ b: 1 }, configuration.writeConcernMax(), err => {
-          expect(err).to.not.exist;
-          collection.insertOne({ c: 1 }, configuration.writeConcernMax(), err => {
-            expect(err).to.not.exist;
-            collection.remove({ a: 1 }, configuration.writeConcernMax(), err => {
-              expect(err).to.not.exist;
-              // Let's perform a count
-              collection.countDocuments((err, count) => {
-                expect(err).to.not.exist;
-                expect(count).to.equal(2);
-                done();
-              });
-            });
-          });
-        });
-      });
-    });
-
     it('should correctly read back document with null', function (done) {
       db.createCollection('shouldCorrectlyReadBackDocumentWithNull', {}, (err, collection) => {
         // Insert a document with a date
@@ -264,15 +241,14 @@ describe('Collection', function () {
       });
     });
 
-    it('should throw error due to illegal update', function (done) {
-      db.createCollection('shouldThrowErrorDueToIllegalUpdate', {}, (err, coll) => {
-        expect(() => coll.update({}, null)).to.throw(/Document must be a valid JavaScript object/);
-        expect(() => coll.update(null, null)).to.throw(
-          /Selector must be a valid JavaScript object/
-        );
+    it('should throw error due to illegal update', async function () {
+      const coll = await db.createCollection('shouldThrowErrorDueToIllegalUpdate', {});
 
-        done();
-      });
+      const filterError = await coll.updateOne(null, {}).catch(error => error);
+      expect(filterError.message).to.match(/Selector must be a valid JavaScript object/);
+
+      const updateError = await coll.updateOne({}, null).catch(error => error);
+      expect(updateError.message).to.match(/Document must be a valid JavaScript object/);
     });
 
     const selectorTests = [
@@ -578,31 +554,10 @@ describe('Collection', function () {
       });
     });
 
-    context('when no callback passed', function () {
-      it('returns a promise', function () {
-        const docsPromise = collection.countDocuments();
-        expect(docsPromise).to.exist.and.to.be.an.instanceof(Promise);
-        return docsPromise.then(result => expect(result).to.equal(1));
-      });
-    });
-
-    context('when a callback is passed', function () {
-      it('does not return a promise', function (done) {
-        const notPromise = collection.countDocuments({ a: 1 }, () => {
-          expect(notPromise).to.be.undefined;
-          done();
-        });
-      });
-
-      it('calls the callback', function (done) {
-        const docs = [{ a: 1 }, { a: 2 }];
-        collection.insertMany(docs).then(() =>
-          collection.countDocuments({ a: 1 }, (err, data) => {
-            expect(data).to.equal(1);
-            done(err);
-          })
-        );
-      });
+    it('returns a promise', function () {
+      const docsPromise = collection.countDocuments();
+      expect(docsPromise).to.exist.and.to.be.an.instanceof(Promise);
+      return docsPromise.then(result => expect(result).to.equal(1));
     });
   });
 

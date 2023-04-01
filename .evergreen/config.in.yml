@@ -11,7 +11,7 @@ command_type: system
 # Protect ourself against rogue test case, or curl gone wild, that runs forever
 # Good rule of thumb: the averageish length a task takes, times 5
 # That roughly accounts for variable system performance for various buildvariants
-exec_timeout_secs: 1200
+exec_timeout_secs: 2100
 
 # What to do when evergreen hits the timeout (`post:` tasks are run automatically)
 timeout:
@@ -28,81 +28,44 @@ functions:
       params:
         directory: "src"
         shallow_clone: true # speed things up by limiting clone depth to 100
+
     # Make an evergreen expansion file with dynamic values
-    - command: shell.exec
+    - command: subprocess.exec
       params:
         working_dir: "src"
-        script: |
-           # Get the current unique version of this checkout
-           if [ "${is_patch}" = "true" ]; then
-              CURRENT_VERSION=$(git describe)-patch-${version_id}
-           else
-              CURRENT_VERSION=latest
-           fi
-
-           export DRIVERS_TOOLS="$(pwd)/../drivers-tools"
-
-           export PROJECT_DIRECTORY="$(pwd)"
-           export MONGO_ORCHESTRATION_HOME="$DRIVERS_TOOLS/.evergreen/orchestration"
-           export MONGODB_BINARIES="$DRIVERS_TOOLS/mongodb/bin"
-           export UPLOAD_BUCKET="${project}"
-
-           # fix paths on windows
-           if [ "Windows_NT" = "$OS" ]; then
-             export DRIVERS_TOOLS=$(cygpath -m -a $DRIVERS_TOOLS)
-             export MONGO_ORCHESTRATION_HOME=$(cygpath -m -a $MONGO_ORCHESTRATION_HOME)
-             export MONGODB_BINARIES=$(cygpath -m -a $MONGODB_BINARIES)
-             export PROJECT_DIRECTORY=$(cygpath -m -a $PROJECT_DIRECTORY)
-           fi
-
-           cat <<EOT > expansion.yml
-           CURRENT_VERSION: "$CURRENT_VERSION"
-           DRIVERS_TOOLS: "$DRIVERS_TOOLS"
-           MONGO_ORCHESTRATION_HOME: "$MONGO_ORCHESTRATION_HOME"
-           MONGODB_BINARIES: "$MONGODB_BINARIES"
-           UPLOAD_BUCKET: "$UPLOAD_BUCKET"
-           PROJECT_DIRECTORY: "$PROJECT_DIRECTORY"
-           PREPARE_SHELL: |
-              set -o errexit
-              set -o xtrace
-              export DRIVERS_TOOLS="$DRIVERS_TOOLS"
-              export MONGO_ORCHESTRATION_HOME="$MONGO_ORCHESTRATION_HOME"
-              export MONGODB_BINARIES="$MONGODB_BINARIES"
-              export UPLOAD_BUCKET="$UPLOAD_BUCKET"
-              export PROJECT_DIRECTORY="$PROJECT_DIRECTORY"
-
-              export TMPDIR="$MONGO_ORCHESTRATION_HOME/db"
-              export PATH="$MONGODB_BINARIES:$PATH"
-              export PROJECT="${project}"
-           EOT
-           # See what we've done
-           cat expansion.yml
+        binary: bash
+        env:
+          is_patch: ${is_patch}
+          project: ${project}
+        args:
+        - .evergreen/prepare-shell.sh
 
     # Load the expansion file to make an evergreen variable with the current unique version
     - command: expansions.update
       params:
         file: src/expansion.yml
 
-  "prepare resources":
-    - command: shell.exec
-      params:
-        script: |
-          ${PREPARE_SHELL}
-          git clone --depth 1 https://github.com/mongodb-labs/drivers-evergreen-tools.git $DRIVERS_TOOLS
-          echo "{ \"releases\": { \"default\": \"$MONGODB_BINARIES\" }}" > $MONGO_ORCHESTRATION_HOME/orchestration.config
-
   "bootstrap mongo-orchestration":
-    - command: shell.exec
+    - command: subprocess.exec
       params:
-        script: |
-          ${PREPARE_SHELL}
-          MONGODB_VERSION=${VERSION} TOPOLOGY=${TOPOLOGY} \
-          AUTH=${AUTH} SSL=${SSL} \
-          ORCHESTRATION_FILE=${ORCHESTRATION_FILE} \
-          REQUIRE_API_VERSION=${REQUIRE_API_VERSION} \
-          LOAD_BALANCER=${LOAD_BALANCER} \
-          COMPRESSOR=${COMPRESSOR} \
-          bash ${DRIVERS_TOOLS}/.evergreen/run-orchestration.sh
+        binary: bash
+        add_expansions_to_env: true
+        env:
+          # The following is the settings for how we want to launch mongodb
+          MONGODB_VERSION: ${VERSION}
+          TOPOLOGY: ${TOPOLOGY}
+          AUTH: ${AUTH}
+          SSL: ${SSL}
+          ORCHESTRATION_FILE: ${ORCHESTRATION_FILE}
+          REQUIRE_API_VERSION: ${REQUIRE_API_VERSION}
+          LOAD_BALANCER: ${LOAD_BALANCER}
+          COMPRESSOR: ${COMPRESSOR}
+          # These are paths necessary for launching mongodb
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+          MONGODB_BINARIES: ${MONGODB_BINARIES}
+        args:
+          - src/.evergreen/run-orchestration.sh
+
     # run-orchestration generates expansion file with the MONGODB_URI for the cluster
     - command: expansions.update
       params:
@@ -131,6 +94,68 @@ functions:
           - .evergreen/run-kms-servers.sh
         env:
           DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+    - command: subprocess.exec
+      params:
+        background: true
+        working_dir: src
+        binary: bash
+        args:
+          - .evergreen/run-azure-kms-mock-server.sh
+        env:
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+
+  "bootstrap oidc":
+    - command: ec2.assume_role
+      params:
+        role_arn: ${OIDC_AWS_ROLE_ARN}
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        shell: bash
+        script: |
+          ${PREPARE_SHELL}
+          cd "${DRIVERS_TOOLS}"/.evergreen/auth_oidc
+
+          # This is a bit confusing but the ec2.assume_role command before
+          # this task will overwrite these variables to a different value
+          # than we have set in our evergreen project config. As these are
+          # now specific to the OIDC ARN, we re-export for the python
+          # scripts.
+          export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+          export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+          export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+          export OIDC_TOKEN_DIR=/tmp/tokens
+
+          . ./activate-authoidcvenv.sh
+          python oidc_write_orchestration.py
+          python oidc_get_tokens.py
+
+  "setup oidc roles":
+    - command: subprocess.exec
+      params:
+        working_dir: src
+        binary: bash
+        args:
+          - .evergreen/setup-oidc-roles.sh
+        env:
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+
+  "run oidc tests aws":
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        timeout_secs: 300
+        shell: bash
+        script: |
+          ${PREPARE_SHELL}
+
+          OIDC_TOKEN_DIR="/tmp/tokens" \
+          AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/tokens/test1" \
+          PROJECT_DIRECTORY="${PROJECT_DIRECTORY}" \
+            bash ${PROJECT_DIRECTORY}/.evergreen/run-oidc-tests.sh
+
   "run tests":
     - command: shell.exec
       type: test
@@ -175,7 +200,7 @@ functions:
           MONGODB_URI="${MONGODB_URI}" \
           AUTH=${AUTH} SSL=${SSL} TEST_CSFLE=true \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} SKIP_DEPS=${SKIP_DEPS|1} NO_EXIT=${NO_EXIT|1} \
+          SKIP_DEPS=${SKIP_DEPS|1} \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
 
   "run serverless tests":
@@ -185,11 +210,47 @@ functions:
     - command: shell.exec
       type: test
       params:
-        working_dir: "src"
+        silent: true
+        working_dir: src
+        script: |
+          cat <<EOT > prepare_client_encryption.sh
+            export CLIENT_ENCRYPTION=${CLIENT_ENCRYPTION}
+            export CSFLE_KMS_PROVIDERS='${CSFLE_KMS_PROVIDERS}'
+            export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}'
+            export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}'
+            export AWS_DEFAULT_REGION='us-east-1'
+            export KMIP_TLS_CA_FILE="${DRIVERS_TOOLS}/.evergreen/x509gen/ca.pem"
+            export KMIP_TLS_CERT_FILE="${DRIVERS_TOOLS}/.evergreen/x509gen/client.pem"
+          EOT
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        timeout_secs: 300
+        shell: bash
         script: |
           ${PREPARE_SHELL}
+
           # Disable xtrace (just in case it was accidentally set).
           set +x
+          source ./prepare_client_encryption.sh
+          rm -f ./prepare_client_encryption.sh
+
+          export VERSION=${VERSION}
+          export DRIVERS_TOOLS=${DRIVERS_TOOLS}
+
+          source ${PROJECT_DIRECTORY}/.evergreen/prepare-crypt-shared-lib.sh
+
+          echo "CRYPT_SHARED_LIB_PATH: $CRYPT_SHARED_LIB_PATH"
+
+          # Get access to the AWS temporary credentials:
+          echo "adding temporary AWS credentials to environment"
+          # CSFLE_AWS_TEMP_ACCESS_KEY_ID, CSFLE_AWS_TEMP_SECRET_ACCESS_KEY, CSFLE_AWS_TEMP_SESSION_TOKEN
+          . "$DRIVERS_TOOLS"/.evergreen/csfle/set-temp-creds.sh
+
+          MONGODB_URI="${MONGODB_URI}" \
+          AUTH=${AUTH} SSL=${SSL} TEST_CSFLE=true \
+          MONGODB_API_VERSION="${MONGODB_API_VERSION}"
 
           export MONGODB_API_VERSION="${MONGODB_API_VERSION}"
           export AUTH="auth"
@@ -239,12 +300,10 @@ functions:
           AUTH=${AUTH} \
           SSL=${SSL} \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} \
           SINGLE_MONGOS_LB_URI="${SINGLE_MONGOS_LB_URI}" \
           MULTI_MONGOS_LB_URI="${MULTI_MONGOS_LB_URI}" \
           TOPOLOGY="${TOPOLOGY}" \
           SKIP_DEPS=${SKIP_DEPS|1} \
-          NO_EXIT=${NO_EXIT|1} \
           LOAD_BALANCER="${LOAD_BALANCER}" \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
 
@@ -261,11 +320,9 @@ functions:
           AUTH=${AUTH} \
           SSL=${SSL} \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} \
           TOPOLOGY="${TOPOLOGY}" \
           COMPRESSOR="${COMPRESSOR}" \
           SKIP_DEPS=${SKIP_DEPS|1} \
-          NO_EXIT=${NO_EXIT|1} \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
 
   "run lint checks":
@@ -292,7 +349,7 @@ functions:
         args:
           - "${PROJECT_DIRECTORY}/.evergreen/run-unit-tests.sh"
 
-  "run typescript next":
+  "check types":
     - command: subprocess.exec
       type: test
       params:
@@ -300,12 +357,13 @@ functions:
         timeout_secs: 60
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: "next"
+          TS_VERSION: ${TS_VERSION}
+          TS_CHECK: CHECK_TYPES
         binary: bash
         args:
           - "${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh"
 
-  "run typescript oldest":
+  "compile driver":
     - command: subprocess.exec
       type: test
       params:
@@ -313,34 +371,48 @@ functions:
         timeout_secs: 60
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: "4.1.6"
-          TRY_COMPILING_DRIVER: "false" # 4.1.6 can consume the public API but not compile the driver
+          TS_VERSION: ${TS_VERSION}
+          TS_CHECK: COMPILE_DRIVER
         binary: bash
         args:
           - "${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh"
 
-  "run typescript current":
+  ###########################################
+  #       mongosh functions
+  ###########################################
+  "compile mongosh":
     - command: subprocess.exec
-      type: test
       params:
-        working_dir: "src"
-        timeout_secs: 60
+        working_dir: src
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: "" # leaving this empty will use the version in package-lock.json
+          TASK_ID: ${task_id}
         binary: bash
         args:
-          - "${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh"
+          - "${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh"
 
-  "run mongosh integration tests":
-    - command: shell.exec
-      type: test
+  "run mongosh tests for package":
+    - command: subprocess.exec
       params:
-        working_dir: "src"
-        script: |
-          ${PREPARE_SHELL}
-          export DISTRO_ID=${distro_id}
-          bash ${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh
+        working_dir: src
+        env:
+          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
+          TASK_ID: ${task_id}
+          MONGOSH_RUN_ONLY_IN_PACKAGE: ${mongosh_package}
+        binary: bash
+        args:
+          - "${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh"
+
+  "run mongosh package scope test":
+    - command: subprocess.exec
+      params:
+        working_dir: src
+        env:
+          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
+          TASK_ID: ${task_id}
+        binary: bash
+        args:
+          - "${PROJECT_DIRECTORY}/.evergreen/run-mongosh-scope-test.sh"
 
   "cleanup":
     - command: shell.exec
@@ -390,11 +462,19 @@ functions:
         working_dir: "src"
         script: |
           ${PREPARE_SHELL}
-          NODE_LTS_NAME=${NODE_LTS_NAME} MSVS_VERSION=${MSVS_VERSION} \
+          NODE_LTS_NAME=${NODE_LTS_NAME} NPM_OPTIONS=${NPM_OPTIONS}\
             bash ${PROJECT_DIRECTORY}/.evergreen/install-dependencies.sh
-    - command: expansions.update
+
+  "install aws-credential-providers":
+    - command: shell.exec
+      type: setup
       params:
-        file: src/deps-expansion.yml
+        shell: bash
+        working_dir: "src"
+        script: |
+          ${PREPARE_SHELL}
+          source "${PROJECT_DIRECTORY}/.evergreen/init-nvm.sh"
+          npm install @aws-sdk/credential-providers
 
   "run atlas tests":
     - command: shell.exec
@@ -449,6 +529,7 @@ functions:
           export DRIVERS_TOOLS="${DRIVERS_TOOLS}"
           export NODE_LTS_NAME='${NODE_LTS_NAME}'
           export MONGODB_URI="${MONGODB_URI}"
+          export TEST_SOCKS5_CSFLE="${TEST_SOCKS5_CSFLE}"
           export SSL="${SSL}"
 
           # Disable xtrace (just in case it was accidentally set).
@@ -466,6 +547,7 @@ functions:
         script: |
           export PROJECT_DIRECTORY="$(pwd)"
           export KRB5_KEYTAB='${gssapi_auth_keytab_base64}'
+          export KRB5_NEW_KEYTAB='${gssapi_auth_new_keytab_base64}'
           export KRB5_PRINCIPAL='${gssapi_auth_principal}'
           export MONGODB_URI='${gssapi_auth_mongodb_uri}'
           export NODE_LTS_NAME='${NODE_LTS_NAME}'
@@ -533,7 +615,12 @@ functions:
               "iam_auth_assume_role_name" : "${iam_auth_assume_role_name}",
               "iam_auth_ec2_instance_account" : "${iam_auth_ec2_instance_account}",
               "iam_auth_ec2_instance_secret_access_key" : "${iam_auth_ec2_instance_secret_access_key}",
-              "iam_auth_ec2_instance_profile" : "${iam_auth_ec2_instance_profile}"
+              "iam_auth_ec2_instance_profile" : "${iam_auth_ec2_instance_profile}",
+              "iam_auth_assume_web_role_name": "${iam_auth_assume_web_role_name}",
+              "iam_web_identity_issuer": "${iam_web_identity_issuer}",
+              "iam_web_identity_rsa_key": "${iam_web_identity_rsa_key}",
+              "iam_web_identity_jwks_uri": "${iam_web_identity_jwks_uri}",
+              "iam_web_identity_token_file": "${iam_web_identity_token_file}"
           }
           EOF
 
@@ -542,10 +629,11 @@ functions:
       type: test
       params:
         working_dir: "src"
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           cd -
 
   "run aws auth test with regular aws credentials":
@@ -553,10 +641,11 @@ functions:
       type: test
       params:
         working_dir: "src"
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_regular_aws.js
     - command: shell.exec
       type: test
@@ -583,10 +672,11 @@ functions:
       type: test
       params:
         working_dir: "src"
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_assume_role.js
     - command: shell.exec
       type: test
@@ -617,13 +707,14 @@ functions:
       type: test
       params:
         working_dir: "src"
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           # Write an empty prepare_mongodb_aws so no auth environment variables
           # are set.
           echo "" > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_ec2.js
     - command: shell.exec
       type: test
@@ -681,11 +772,61 @@ functions:
           ${PREPARE_SHELL}
           ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
 
+  "run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set":
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        silent: true
+        script: |
+          cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
+          . ./activate_venv.sh
+          ${MONGODB_BINARIES}/mongo --verbose aws_e2e_web_identity.js
+          cd -
+          cat <<'EOF' > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
+            export AWS_WEB_IDENTITY_TOKEN_FILE=${iam_web_identity_token_file}
+            export AWS_ROLE_ARN=${iam_auth_assume_web_role_name}
+            export AWS_ROLE_SESSION_NAME='test'
+            export MONGODB_URI="mongodb://localhost:27017/aws?authMechanism=MONGODB-AWS"
+          EOF
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        script: |
+          ${PREPARE_SHELL}
+          ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
+
+  "run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset":
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        silent: true
+        script: |
+          cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
+          . ./activate_venv.sh
+          ${MONGODB_BINARIES}/mongo --verbose aws_e2e_web_identity.js
+          cd -
+          cat <<'EOF' > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
+            export AWS_WEB_IDENTITY_TOKEN_FILE=${iam_web_identity_token_file}
+            export AWS_ROLE_ARN=${iam_auth_assume_web_role_name}
+            export MONGODB_URI="mongodb://localhost:27017/aws?authMechanism=MONGODB-AWS"
+          EOF
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: "src"
+        script: |
+          ${PREPARE_SHELL}
+          ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
+
   "run aws ECS auth test":
     - command: shell.exec
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           AUTH_AWS_DIR=${DRIVERS_TOOLS}/.evergreen/auth_aws
@@ -706,7 +847,7 @@ functions:
           EOF
 
           cat setup.js
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo --nodb setup.js aws_e2e_ecs.js
 
   "run-ocsp-test":
@@ -808,18 +949,6 @@ functions:
 
           bash ${PROJECT_DIRECTORY}/.evergreen/run-custom-csfle-tests.sh
 
-  "run custom snappy tests":
-    - command: subprocess.exec
-      params:
-        working_dir: "src"
-        timeout_secs: 60
-        env:
-          MONGODB_URI: ${MONGODB_URI}
-          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-        binary: bash
-        args:
-          - "${PROJECT_DIRECTORY}/.evergreen/run-snappy-version-test.sh"
-
   "run lambda handler example tests":
     - command: subprocess.exec
       params:
@@ -854,21 +983,6 @@ functions:
           ${PREPARE_SHELL}
           ${PROJECT_DIRECTORY}/.evergreen/run-lambda-aws-tests.sh
 
-  "run bson-ext test":
-    - command: subprocess.exec
-      type: test
-      params:
-        working_dir: "src"
-        timeout_secs: 60
-        env:
-          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          MONGODB_URI: ${MONGODB_URI}
-          TEST_NPM_SCRIPT: ${TEST_NPM_SCRIPT}
-        binary: bash
-        args:
-          - '${PROJECT_DIRECTORY}/.evergreen/run-bson-ext-test.sh'
-
-
   "upload test results":
     # Upload the xunit-format test results.
     - command: attach.xunit_results
@@ -889,7 +1003,7 @@ functions:
         local_file:  src/coverage/coverage-final.json
         optional: true
         # Upload the coverage report for all tasks in a single build to the same directory.
-        # TODO NODE-3897 - change upload directory to mongo-node-driver-next
+        # TODO NODE-4707 - change upload directory to ${UPLOAD_BUCKET}
         # This change will require changing the `download and merge coverage` func as well
         remote_file: mongo-node-driver/${revision}/${version_id}/coverage.${build_variant}.${task_name}.json
         bucket: mciuploads
@@ -900,21 +1014,45 @@ functions:
   "download and merge coverage":
     - command: shell.exec
       params:
-        silent: true
         working_dir: "src"
         script: |
           ${PREPARE_SHELL}
           export AWS_ACCESS_KEY_ID=${aws_key}
           export AWS_SECRET_ACCESS_KEY=${aws_secret}
+
           # Download all the task coverage files.
-          # TODO NODE-3897 - finish this function.  the code below this point is untested because
-          #   aws s3 cp fails due to permissions errors
-          aws s3 cp --recursive s3://mciuploads/mongo-node-driver/${revision}/${version_id}/ coverage/
+          # NOTE: All coverage files are too large for V8 to handle the resulting call to
+          #       JSON.stringify from within nyc, so with stick to Fermiun to include the
+          #       compression tests.
+          aws s3 cp --recursive s3://mciuploads/mongo-node-driver/${revision}/${version_id}/ \
+            coverage/ \
+            --exclude "*rhel80-large*" \
+            --include "*fermiun"
 
+          # npx does not recognize the dependency so install it directly.
+          npm install @istanbuljs/nyc-config-typescript
+          cd coverage
+          sed -i'' -e 's/\/data\/mci\/.\{32\}\/src\///g' *
+          ls -la
+          cd ..
           npx nyc merge coverage/ merged-coverage/coverage.json
-          npx nyc report -t merged-coverage --reporter=html --report-dir output
+          npx nyc report -t merged-coverage/ --reporter=html --report-dir coverage-report
 
-          aws s3 cp output/lcov-report s3://mciuploads/mongo-node-driver/${revision}/${version_id}//lcov-report/
+          aws s3 cp coverage-report/ \
+            s3://mciuploads/mongo-node-driver/${revision}/${version_id}/coverage/ \
+            --recursive \
+            --acl public-read \
+            --region us-east-1
+    - command: s3.put
+      params:
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file:  src/coverage-report/index.html
+        remote_file: mongo-node-driver/${revision}/${version_id}/coverage/index.html
+        bucket: mciuploads
+        permissions: public-read
+        content_type: text/html
+        display_name: "Coverage Report HTML"
 
   "run spec driver benchmarks":
     - command: subprocess.exec
@@ -932,6 +1070,8 @@ tasks:
   - name: "test-serverless"
     tags: ["serverless"]
     commands:
+      - func: install dependencies
+      - func: bootstrap kms servers
       - func: "run serverless tests"
 
   - name: run-spec-benchmark-tests
@@ -942,7 +1082,7 @@ tasks:
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: gallium
+          NODE_LTS_NAME: hydrogen
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: rapid
@@ -953,16 +1093,107 @@ tasks:
         params:
           file: src/results.json
 
+  - name: "test-gcpkms-task"
+    commands:
+      - func: "install dependencies"
+      # Upload node driver to a GCP instance
+      - command: subprocess.exec
+        type: setup
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+          args:
+            - src/.evergreen/setup-gcp-testing.sh
+      # Run Mocha test over on GCE instance
+      - command: subprocess.exec
+        type: test
+        params:
+          working_dir: src
+          binary: bash
+          env:
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+            GCPKMS_CMD: "env EXPECTED_GCPKMS_OUTCOME=success bash src/.evergreen/run-gcp-kms-tests.sh"
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/gcpkms/run-command.sh
+
+
+  - name: "test-gcpkms-fail-task"
+    # test-gcpkms-fail-task runs in a non-GCE environment.
+    # It is expected to fail to obtain GCE credentials.
+    commands:
+      - func: "install dependencies"
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: server
+          AUTH: noauth
+      - command: subprocess.exec
+        type: test
+        params:
+          binary: bash
+          env:
+            EXPECTED_GCPKMS_OUTCOME: "failure"
+          args:
+            - src/.evergreen/run-gcp-kms-tests.sh
+
+
+  - name: "test-azurekms-task"
+    commands:
+      - func: "install dependencies"
+      - command: subprocess.exec
+        type: setup
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - src/.evergreen/copy-driver-to-azure.sh
+      - command: subprocess.exec
+        type: test
+        params:
+          working_dir: src
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            AZUREKMS_CMD: "env EXPECTED_AZUREKMS_OUTCOME=success bash src/.evergreen/run-azure-kms-tests.sh"
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/azurekms/run-command.sh
+
+  - name: "test-azurekms-fail-task"
+    commands:
+      - func: "install dependencies"
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: server
+          AUTH: noauth
+      - command: subprocess.exec
+        type: test
+        params:
+          binary: bash
+          env:
+            EXPECTED_AZUREKMS_OUTCOME: "failure"
+          args:
+            - src/.evergreen/run-azure-kms-tests.sh
+
+
 task_groups:
   - name: serverless_task_group
     setup_group_can_fail_task: true
     setup_group_timeout_secs: 1800 # 30 minutes
     setup_group:
       - func: "fetch source"
-      - func: "prepare resources"
       - command: shell.exec
         params:
-          shell: "bash"
+          shell: bash
           script: |
             ${PREPARE_SHELL}
             set +o xtrace
@@ -989,9 +1220,72 @@ task_groups:
     tasks:
       - ".serverless"
 
+  - name: test_gcpkms_task_group
+    setup_group_can_fail_task: true
+    setup_group_timeout_secs: 1800 # 30 minutes
+    setup_group:
+      - func: fetch source
+      - command: subprocess.exec
+        params:
+          working_dir: "src"
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            testgcpkms_key_file: ${gcpkms_key_file}
+            GCPKMS_SERVICEACCOUNT: ${gcpkms_service_account}
+            GCPKMS_DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+            GCPKMS_MACHINETYPE: "e2-standard-4"
+          args:
+            - .evergreen/setup-gcp-instance.sh
+      - command: expansions.update
+        # Load the GCPKMS_GCLOUD, GCPKMS_INSTANCE, GCPKMS_REGION, and GCPKMS_ZONE expansions.
+        params:
+          file: src/testgcpkms-expansions.yml
+
+    teardown_group:
+      - command: subprocess.exec
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/gcpkms/delete-instance.sh
+    tasks:
+      - test-gcpkms-task
+
+  - name: test_azurekms_task_group
+    setup_group_can_fail_task: true
+    setup_group_timeout_secs: 1800 # 30 minutes
+    setup_group:
+      - func: fetch source
+      - command: subprocess.exec
+        params:
+          working_dir: "src"
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - .evergreen/setup-azure-vm.sh
+      - command: expansions.update
+        # Load AZUREKMS_VMNAME into the expansions.
+        params:
+          file: src/testazurekms-expansions.yml
+
+    teardown_group:
+      - command: subprocess.exec
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/azurekms/delete-vm.sh
+    tasks:
+      - test-azurekms-task
+
 pre:
   - func: "fetch source"
-  - func: "prepare resources"
   - func: "windows fix"
   - func: "fix absolute paths"
   - func: "make files executable"
@@ -1006,6 +1300,6 @@ ignore:
 buildvariants:
   - name: performance-tests
     display_name: Performance Test
-    run_on: ubuntu1804-large
+    run_on: rhel80-large
     tasks:
       - run-spec-benchmark-tests

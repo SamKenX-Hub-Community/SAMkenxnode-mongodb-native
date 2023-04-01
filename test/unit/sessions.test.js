@@ -7,14 +7,15 @@ const {
   ServerSessionPool,
   ServerSession,
   ClientSession,
-  applySession
-} = require('../../src/sessions');
-const { now, isHello } = require('../../src/utils');
+  applySession,
+  BSON
+} = require('../mongodb');
+const { now, isHello } = require('../mongodb');
 const { getSymbolFrom } = require('../tools/utils');
-const { Long } = require('../../src/bson');
-const { MongoRuntimeError } = require('../../src/error');
+const { Long } = require('../mongodb');
+const { MongoRuntimeError } = require('../mongodb');
 const sinon = require('sinon');
-const { MongoClient } = require('../../src');
+const { MongoClient } = require('../mongodb');
 
 describe('Sessions - unit', function () {
   let client;
@@ -115,6 +116,16 @@ describe('Sessions - unit', function () {
         expect(session).property('clusterTime').to.equal(alsoValidTime);
       });
 
+      it('sets clusterTime to the one provided when the signature.keyId is a bigint', () => {
+        const validClusterTime = {
+          clusterTime: new BSON.Timestamp(BSON.Long.fromNumber(1, true)),
+          signature: { hash: new BSON.Binary('test'), keyId: 100n }
+        };
+
+        session.advanceClusterTime(validClusterTime);
+        expect(session.clusterTime.signature.keyId).to.equal(100n);
+      });
+
       it('should set the session clusterTime to the one provided if it is greater than the the existing session clusterTime', () => {
         const validInitialTime = genClusterTime(100);
         const validGreaterTime = genClusterTime(200);
@@ -165,6 +176,65 @@ describe('Sessions - unit', function () {
               snapshot: true
             })
         ).to.throw('Properties "causalConsistency" and "snapshot" are mutually exclusive');
+      });
+
+      it('should default `causalConsistency` to `true` for explicit non-snapshot sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, { explicit: true });
+        expect(session.supports).property('causalConsistency', true);
+      });
+
+      it('should default `causalConsistency` to `false` for explicit snapshot sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: true,
+          snapshot: true
+        });
+        expect(session.supports).property('causalConsistency', false);
+      });
+
+      it('should allow `causalConsistency=false` option in explicit snapshot sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: true,
+          causalConsistency: false,
+          snapshot: true
+        });
+        expect(session.supports).property('causalConsistency', false);
+      });
+
+      it('should respect `causalConsistency=false` option in explicit sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: true,
+          causalConsistency: false
+        });
+        expect(session.supports).property('causalConsistency', false);
+      });
+
+      it('should respect `causalConsistency=true` option in explicit non-snapshot sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: true,
+          causalConsistency: true
+        });
+        expect(session.supports).property('causalConsistency', true);
+      });
+
+      it('should default `causalConsistency` to `false` for implicit sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, { explicit: false });
+        expect(session.supports).property('causalConsistency', false);
+      });
+
+      it('should respect `causalConsistency=false` option in implicit sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: false,
+          causalConsistency: false
+        });
+        expect(session.supports).property('causalConsistency', false);
+      });
+
+      it('should respect `causalConsistency=true` option in implicit sessions', function () {
+        const session = new ClientSession(client, serverSessionPool, {
+          explicit: false,
+          causalConsistency: true
+        });
+        expect(session.supports).property('causalConsistency', true);
       });
 
       it('should default to `null` for `clusterTime`', function () {
@@ -428,20 +498,81 @@ describe('Sessions - unit', function () {
       done();
     });
 
-    it('should remove sessions which have timed out on release', function (done) {
-      const newSession = new ServerSession();
-      const oldSessions = [new ServerSession(), new ServerSession()].map(session => {
-        session.lastUse = now() - 30 * 60 * 1000; // add 30min
-        return session;
+    describe('release()', () => {
+      const makeOldSession = () => {
+        const oldSession = new ServerSession();
+        oldSession.lastUse = now() - 30 * 60 * 1000; // add 30min
+        return oldSession;
+      };
+
+      it('should remove old sessions if they are at the start of the pool', () => {
+        const pool = new ServerSessionPool(client);
+        // old sessions at the start
+        pool.sessions.pushMany(Array.from({ length: 3 }, () => makeOldSession()));
+        pool.sessions.pushMany([new ServerSession(), new ServerSession()]);
+
+        pool.release(new ServerSession());
+
+        expect(pool.sessions).to.have.lengthOf(3);
+        const anyTimedOutSessions = pool.sessions
+          .toArray()
+          .some(s => s.hasTimedOut(30 * 60 * 1000));
+        expect(anyTimedOutSessions, 'Unexpected timed out sessions found in pool after release').to
+          .be.false;
       });
 
-      const pool = new ServerSessionPool(client);
-      pool.sessions = pool.sessions.concat(oldSessions);
+      it('should remove old sessions if they are in the middle of the pool', () => {
+        const pool = new ServerSessionPool(client);
+        pool.sessions.push(new ServerSession()); // one fresh before
+        pool.sessions.pushMany(Array.from({ length: 3 }, () => makeOldSession()));
+        pool.sessions.push(new ServerSession()); // one fresh after
 
-      pool.release(newSession);
-      expect(pool.sessions).to.have.length(1);
-      expect(pool.sessions[0]).to.eql(newSession);
-      done();
+        pool.release(new ServerSession());
+
+        expect(pool.sessions).to.have.lengthOf(3);
+        const anyTimedOutSessions = pool.sessions
+          .toArray()
+          .some(s => s.hasTimedOut(30 * 60 * 1000));
+        expect(anyTimedOutSessions, 'Unexpected timed out sessions found in pool after release').to
+          .be.false;
+      });
+
+      it('should remove old sessions if they are at the end of the pool', () => {
+        const pool = new ServerSessionPool(client);
+        pool.sessions.pushMany([new ServerSession(), new ServerSession()]);
+
+        const oldSession = makeOldSession();
+        pool.sessions.push(oldSession);
+
+        pool.release(new ServerSession());
+
+        expect(pool.sessions).to.have.lengthOf(3);
+        const anyTimedOutSessions = pool.sessions
+          .toArray()
+          .some(s => s.hasTimedOut(30 * 60 * 1000));
+        expect(anyTimedOutSessions, 'Unexpected timed out sessions found in pool after release').to
+          .be.false;
+      });
+
+      it('should remove old sessions that are not contiguous in the pool', () => {
+        const pool = new ServerSessionPool(client);
+        pool.sessions.pushMany([
+          makeOldSession(),
+          new ServerSession(),
+          makeOldSession(),
+          new ServerSession(),
+          makeOldSession()
+        ]);
+
+        pool.release(new ServerSession());
+
+        expect(pool.sessions).to.have.lengthOf(3);
+        const anyTimedOutSessions = pool.sessions
+          .toArray()
+          .some(s => s.hasTimedOut(30 * 60 * 1000));
+        expect(anyTimedOutSessions, 'Unexpected timed out sessions found in pool after release').to
+          .be.false;
+      });
     });
 
     it('should not reintroduce a soon-to-expire session to the pool on release', function (done) {

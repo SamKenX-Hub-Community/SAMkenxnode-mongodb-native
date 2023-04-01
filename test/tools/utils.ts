@@ -1,13 +1,11 @@
 import { EJSON } from 'bson';
 import * as BSON from 'bson';
 import { expect } from 'chai';
+import { Readable } from 'stream';
 import { setTimeout } from 'timers';
 import { inspect, promisify } from 'util';
 
-import { OP_MSG } from '../../src/cmap/wire_protocol/constants';
-import { Document } from '../../src/index';
-import { Logger } from '../../src/logger';
-import { deprecateOptions, DeprecateOptionsConfig } from '../../src/utils';
+import { Document, OP_MSG } from '../mongodb';
 import { runUnifiedSuite } from './unified-spec-runner/runner';
 import {
   CollectionData,
@@ -19,57 +17,9 @@ import {
   UnifiedSuite
 } from './unified-spec-runner/schema';
 
-export function makeTestFunction(config: DeprecateOptionsConfig) {
-  const fn = (options: any) => {
-    if (options) options = null;
-  };
-  return deprecateOptions(config, fn);
-}
-
 export function ensureCalledWith(stub: any, args: any[]) {
   args.forEach((m: any) => expect(stub).to.have.been.calledWith(m));
 }
-
-// creation of class with a logger
-export function ClassWithLogger() {
-  this.logger = new Logger('ClassWithLogger');
-}
-
-ClassWithLogger.prototype.f = makeTestFunction({
-  name: 'f',
-  deprecatedOptions: ['maxScan', 'snapshot', 'fields'],
-  optionsIndex: 0
-});
-
-ClassWithLogger.prototype.getLogger = function () {
-  return this.logger;
-};
-
-// creation of class without a logger
-export function ClassWithoutLogger() {
-  // empty function for class
-}
-
-ClassWithoutLogger.prototype.f = makeTestFunction({
-  name: 'f',
-  deprecatedOptions: ['maxScan', 'snapshot', 'fields'],
-  optionsIndex: 0
-});
-
-// creation of class where getLogger returns undefined
-export function ClassWithUndefinedLogger() {
-  // empty function for class
-}
-
-ClassWithUndefinedLogger.prototype.f = makeTestFunction({
-  name: 'f',
-  deprecatedOptions: ['maxScan', 'snapshot', 'fields'],
-  optionsIndex: 0
-});
-
-ClassWithUndefinedLogger.prototype.getLogger = function () {
-  return undefined;
-};
 
 export class EventCollector {
   private _events: Record<string, any[]>;
@@ -294,7 +244,7 @@ export interface FailPoint {
     closeConnection?: boolean;
     blockConnection?: boolean;
     blockTimeMS?: number;
-    writeConcernError?: { code: number; errmsg: string };
+    writeConcernError?: { code: number; errmsg?: string; errorLabels?: string[] };
     threadName?: string;
     failInternalCommands?: boolean;
     errorLabels?: string[];
@@ -352,6 +302,18 @@ export class TestBuilder {
 
     return test;
   }
+}
+
+export function bufferToStream(buffer) {
+  const stream = new Readable();
+  if (Array.isArray(buffer)) {
+    buffer.forEach(b => stream.push(b));
+  } else {
+    stream.push(buffer);
+  }
+
+  stream.push(null);
+  return stream;
 }
 
 export function generateOpMsgBuffer(document: Document): Buffer {
@@ -497,9 +459,16 @@ export class UnifiedTestSuiteBuilder {
   }
 }
 
-/** Test whether the driver is using bson-ext */
-export function isBSONExtImported() {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const driverBSON = require('../../src/bson');
-  return driverBSON.deserialize.toString().includes('[native code]');
-}
+export const byStrings = (a: any, b: any) => {
+  const res = `${a}`.localeCompare(`${b}`);
+  return res < 0 ? -1 : res > 0 ? 1 : 0;
+};
+
+export const sorted = <T>(iterable: Iterable<T>, how: (a: T, b: T) => 0 | 1 | -1) => {
+  if (typeof how !== 'function') {
+    throw new TypeError('must provide a "how" function to sorted');
+  }
+  const items = Array.from(iterable);
+  items.sort(how);
+  return items;
+};

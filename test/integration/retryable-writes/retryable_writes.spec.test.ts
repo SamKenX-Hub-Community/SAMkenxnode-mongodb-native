@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import * as path from 'path';
 
-import type { Collection, Db, MongoClient } from '../../../src';
+import type { Collection, Db, MongoClient } from '../../mongodb';
 import { loadSpecTests } from '../../spec';
 import { legacyRunOnToRunOnRequirement } from '../../tools/spec-runner';
 import { runUnifiedSuite } from '../../tools/unified-spec-runner/runner';
@@ -150,8 +150,12 @@ async function executeScenarioTest(test, ctx: RetryableWriteTestContext) {
     const result = resultOrError;
     const expected = test.outcome.result;
 
-    // TODO(NODE-4034): Make CRUD results spec compliant
-    expect(result.value ?? result).to.deep.include(expected);
+    const actual = result.value ?? result;
+    // Some of our result classes contain the optional 'acknowledged' property which is
+    // not part of the test expectations.
+    for (const property in expected) {
+      expect(actual).to.have.deep.property(property, expected[property]);
+    }
   }
 
   if (test.outcome.collection) {

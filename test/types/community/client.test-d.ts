@@ -4,13 +4,12 @@ import {
   GridFSBucket,
   MongoClient,
   MongoClientOptions,
-  MongoError,
   MongoNetworkError,
   MongoParseError,
   ReadPreference,
   ReadPreferenceMode,
   W
-} from '../../../src/index';
+} from '../../mongodb';
 
 // TODO(NODE-3348): Improve the tests to expectType assertions
 
@@ -18,7 +17,6 @@ export const connectionString = 'mongodb://127.0.0.1:27017/test';
 
 const options: MongoClientOptions = {
   authSource: ' ',
-  loggerLevel: 'debug',
   w: 1,
   wtimeoutMS: 300,
   journal: true,
@@ -35,28 +33,13 @@ const options: MongoClientOptions = {
   promoteBuffers: false,
   authMechanism: 'SCRAM-SHA-1',
   forceServerObjectId: false,
-  promiseLibrary: Promise,
   directConnection: false
 };
-
-MongoClient.connect(connectionString, options, (err, client?: MongoClient) => {
-  if (err || !client) throw err;
-  const db = client.db('test');
-  db.collection('test_crud');
-  // Let's close the db
-  client.close();
-});
 
 export async function testFunc(): Promise<MongoClient> {
   const testClient: MongoClient = await MongoClient.connect(connectionString);
   return testClient;
 }
-
-MongoClient.connect(connectionString, err => {
-  if (err instanceof MongoError) {
-    expectType<boolean>(err.hasErrorLabel('label'));
-  }
-});
 
 expectType<Promise<MongoClient>>(MongoClient.connect(connectionString, options));
 
@@ -84,16 +67,6 @@ export function gridTest(bucket: GridFSBucket): void {
   openUploadStream.on('close', () => {});
   openUploadStream.on('end', () => {});
   expectType<Promise<void>>(openUploadStream.abort()); // $ExpectType void
-  expectType<void>(
-    openUploadStream.abort(() => {
-      openUploadStream.removeAllListeners();
-    })
-  );
-  openUploadStream.abort(error => {
-    error; // $ExpectType MongoError
-  });
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  openUploadStream.abort((error, result) => {});
 }
 
 // Client-Side Field Level Encryption

@@ -1,6 +1,6 @@
 stepback: true
 command_type: system
-exec_timeout_secs: 1200
+exec_timeout_secs: 2100
 timeout:
   - command: subprocess.exec
     params:
@@ -13,79 +13,36 @@ functions:
       params:
         directory: src
         shallow_clone: true
-    - command: shell.exec
+    - command: subprocess.exec
       params:
         working_dir: src
-        script: |
-          # Get the current unique version of this checkout
-          if [ "${is_patch}" = "true" ]; then
-             CURRENT_VERSION=$(git describe)-patch-${version_id}
-          else
-             CURRENT_VERSION=latest
-          fi
-
-          export DRIVERS_TOOLS="$(pwd)/../drivers-tools"
-
-          export PROJECT_DIRECTORY="$(pwd)"
-          export MONGO_ORCHESTRATION_HOME="$DRIVERS_TOOLS/.evergreen/orchestration"
-          export MONGODB_BINARIES="$DRIVERS_TOOLS/mongodb/bin"
-          export UPLOAD_BUCKET="${project}"
-
-          # fix paths on windows
-          if [ "Windows_NT" = "$OS" ]; then
-            export DRIVERS_TOOLS=$(cygpath -m -a $DRIVERS_TOOLS)
-            export MONGO_ORCHESTRATION_HOME=$(cygpath -m -a $MONGO_ORCHESTRATION_HOME)
-            export MONGODB_BINARIES=$(cygpath -m -a $MONGODB_BINARIES)
-            export PROJECT_DIRECTORY=$(cygpath -m -a $PROJECT_DIRECTORY)
-          fi
-
-          cat <<EOT > expansion.yml
-          CURRENT_VERSION: "$CURRENT_VERSION"
-          DRIVERS_TOOLS: "$DRIVERS_TOOLS"
-          MONGO_ORCHESTRATION_HOME: "$MONGO_ORCHESTRATION_HOME"
-          MONGODB_BINARIES: "$MONGODB_BINARIES"
-          UPLOAD_BUCKET: "$UPLOAD_BUCKET"
-          PROJECT_DIRECTORY: "$PROJECT_DIRECTORY"
-          PREPARE_SHELL: |
-             set -o errexit
-             set -o xtrace
-             export DRIVERS_TOOLS="$DRIVERS_TOOLS"
-             export MONGO_ORCHESTRATION_HOME="$MONGO_ORCHESTRATION_HOME"
-             export MONGODB_BINARIES="$MONGODB_BINARIES"
-             export UPLOAD_BUCKET="$UPLOAD_BUCKET"
-             export PROJECT_DIRECTORY="$PROJECT_DIRECTORY"
-
-             export TMPDIR="$MONGO_ORCHESTRATION_HOME/db"
-             export PATH="$MONGODB_BINARIES:$PATH"
-             export PROJECT="${project}"
-          EOT
-          # See what we've done
-          cat expansion.yml
+        binary: bash
+        env:
+          is_patch: ${is_patch}
+          project: ${project}
+        args:
+          - .evergreen/prepare-shell.sh
     - command: expansions.update
       params:
         file: src/expansion.yml
-  prepare resources:
-    - command: shell.exec
-      params:
-        script: >
-          ${PREPARE_SHELL}
-
-          git clone --depth 1 https://github.com/mongodb-labs/drivers-evergreen-tools.git $DRIVERS_TOOLS
-
-          echo "{ \"releases\": { \"default\": \"$MONGODB_BINARIES\" }}" >
-          $MONGO_ORCHESTRATION_HOME/orchestration.config
   bootstrap mongo-orchestration:
-    - command: shell.exec
+    - command: subprocess.exec
       params:
-        script: |
-          ${PREPARE_SHELL}
-          MONGODB_VERSION=${VERSION} TOPOLOGY=${TOPOLOGY} \
-          AUTH=${AUTH} SSL=${SSL} \
-          ORCHESTRATION_FILE=${ORCHESTRATION_FILE} \
-          REQUIRE_API_VERSION=${REQUIRE_API_VERSION} \
-          LOAD_BALANCER=${LOAD_BALANCER} \
-          COMPRESSOR=${COMPRESSOR} \
-          bash ${DRIVERS_TOOLS}/.evergreen/run-orchestration.sh
+        binary: bash
+        add_expansions_to_env: true
+        env:
+          MONGODB_VERSION: ${VERSION}
+          TOPOLOGY: ${TOPOLOGY}
+          AUTH: ${AUTH}
+          SSL: ${SSL}
+          ORCHESTRATION_FILE: ${ORCHESTRATION_FILE}
+          REQUIRE_API_VERSION: ${REQUIRE_API_VERSION}
+          LOAD_BALANCER: ${LOAD_BALANCER}
+          COMPRESSOR: ${COMPRESSOR}
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+          MONGODB_BINARIES: ${MONGODB_BINARIES}
+        args:
+          - src/.evergreen/run-orchestration.sh
     - command: expansions.update
       params:
         file: mo-expansion.yml
@@ -111,6 +68,64 @@ functions:
           - .evergreen/run-kms-servers.sh
         env:
           DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+    - command: subprocess.exec
+      params:
+        background: true
+        working_dir: src
+        binary: bash
+        args:
+          - .evergreen/run-azure-kms-mock-server.sh
+        env:
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+  bootstrap oidc:
+    - command: ec2.assume_role
+      params:
+        role_arn: ${OIDC_AWS_ROLE_ARN}
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        shell: bash
+        script: |
+          ${PREPARE_SHELL}
+          cd "${DRIVERS_TOOLS}"/.evergreen/auth_oidc
+
+          # This is a bit confusing but the ec2.assume_role command before
+          # this task will overwrite these variables to a different value
+          # than we have set in our evergreen project config. As these are
+          # now specific to the OIDC ARN, we re-export for the python
+          # scripts.
+          export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+          export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+          export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+          export OIDC_TOKEN_DIR=/tmp/tokens
+
+          . ./activate-authoidcvenv.sh
+          python oidc_write_orchestration.py
+          python oidc_get_tokens.py
+  setup oidc roles:
+    - command: subprocess.exec
+      params:
+        working_dir: src
+        binary: bash
+        args:
+          - .evergreen/setup-oidc-roles.sh
+        env:
+          DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+  run oidc tests aws:
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        timeout_secs: 300
+        shell: bash
+        script: |
+          ${PREPARE_SHELL}
+
+          OIDC_TOKEN_DIR="/tmp/tokens" \
+          AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/tokens/test1" \
+          PROJECT_DIRECTORY="${PROJECT_DIRECTORY}" \
+            bash ${PROJECT_DIRECTORY}/.evergreen/run-oidc-tests.sh
   run tests:
     - command: shell.exec
       type: test
@@ -155,7 +170,7 @@ functions:
           MONGODB_URI="${MONGODB_URI}" \
           AUTH=${AUTH} SSL=${SSL} TEST_CSFLE=true \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} SKIP_DEPS=${SKIP_DEPS|1} NO_EXIT=${NO_EXIT|1} \
+          SKIP_DEPS=${SKIP_DEPS|1} \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
   run serverless tests:
     - command: timeout.update
@@ -164,11 +179,47 @@ functions:
     - command: shell.exec
       type: test
       params:
+        silent: true
         working_dir: src
         script: |
+          cat <<EOT > prepare_client_encryption.sh
+            export CLIENT_ENCRYPTION=${CLIENT_ENCRYPTION}
+            export CSFLE_KMS_PROVIDERS='${CSFLE_KMS_PROVIDERS}'
+            export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}'
+            export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}'
+            export AWS_DEFAULT_REGION='us-east-1'
+            export KMIP_TLS_CA_FILE="${DRIVERS_TOOLS}/.evergreen/x509gen/ca.pem"
+            export KMIP_TLS_CERT_FILE="${DRIVERS_TOOLS}/.evergreen/x509gen/client.pem"
+          EOT
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        timeout_secs: 300
+        shell: bash
+        script: |
           ${PREPARE_SHELL}
+
           # Disable xtrace (just in case it was accidentally set).
           set +x
+          source ./prepare_client_encryption.sh
+          rm -f ./prepare_client_encryption.sh
+
+          export VERSION=${VERSION}
+          export DRIVERS_TOOLS=${DRIVERS_TOOLS}
+
+          source ${PROJECT_DIRECTORY}/.evergreen/prepare-crypt-shared-lib.sh
+
+          echo "CRYPT_SHARED_LIB_PATH: $CRYPT_SHARED_LIB_PATH"
+
+          # Get access to the AWS temporary credentials:
+          echo "adding temporary AWS credentials to environment"
+          # CSFLE_AWS_TEMP_ACCESS_KEY_ID, CSFLE_AWS_TEMP_SECRET_ACCESS_KEY, CSFLE_AWS_TEMP_SESSION_TOKEN
+          . "$DRIVERS_TOOLS"/.evergreen/csfle/set-temp-creds.sh
+
+          MONGODB_URI="${MONGODB_URI}" \
+          AUTH=${AUTH} SSL=${SSL} TEST_CSFLE=true \
+          MONGODB_API_VERSION="${MONGODB_API_VERSION}"
 
           export MONGODB_API_VERSION="${MONGODB_API_VERSION}"
           export AUTH="auth"
@@ -215,12 +266,10 @@ functions:
           AUTH=${AUTH} \
           SSL=${SSL} \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} \
           SINGLE_MONGOS_LB_URI="${SINGLE_MONGOS_LB_URI}" \
           MULTI_MONGOS_LB_URI="${MULTI_MONGOS_LB_URI}" \
           TOPOLOGY="${TOPOLOGY}" \
           SKIP_DEPS=${SKIP_DEPS|1} \
-          NO_EXIT=${NO_EXIT|1} \
           LOAD_BALANCER="${LOAD_BALANCER}" \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
   run-compression-tests:
@@ -236,11 +285,9 @@ functions:
           AUTH=${AUTH} \
           SSL=${SSL} \
           MONGODB_API_VERSION="${MONGODB_API_VERSION}" \
-          NODE_VERSION=${NODE_VERSION} \
           TOPOLOGY="${TOPOLOGY}" \
           COMPRESSOR="${COMPRESSOR}" \
           SKIP_DEPS=${SKIP_DEPS|1} \
-          NO_EXIT=${NO_EXIT|1} \
             bash ${PROJECT_DIRECTORY}/.evergreen/run-tests.sh
   run lint checks:
     - command: subprocess.exec
@@ -264,7 +311,7 @@ functions:
         binary: bash
         args:
           - ${PROJECT_DIRECTORY}/.evergreen/run-unit-tests.sh
-  run typescript next:
+  check types:
     - command: subprocess.exec
       type: test
       params:
@@ -272,11 +319,12 @@ functions:
         timeout_secs: 60
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: next
+          TS_VERSION: ${TS_VERSION}
+          TS_CHECK: CHECK_TYPES
         binary: bash
         args:
           - ${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh
-  run typescript oldest:
+  compile driver:
     - command: subprocess.exec
       type: test
       params:
@@ -284,32 +332,42 @@ functions:
         timeout_secs: 60
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: 4.1.6
-          TRY_COMPILING_DRIVER: 'false'
+          TS_VERSION: ${TS_VERSION}
+          TS_CHECK: COMPILE_DRIVER
         binary: bash
         args:
           - ${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh
-  run typescript current:
+  compile mongosh:
     - command: subprocess.exec
-      type: test
       params:
         working_dir: src
-        timeout_secs: 60
         env:
           PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          TS_VERSION: ''
+          TASK_ID: ${task_id}
         binary: bash
         args:
-          - ${PROJECT_DIRECTORY}/.evergreen/run-typescript.sh
-  run mongosh integration tests:
-    - command: shell.exec
-      type: test
+          - ${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh
+  run mongosh tests for package:
+    - command: subprocess.exec
       params:
         working_dir: src
-        script: |
-          ${PREPARE_SHELL}
-          export DISTRO_ID=${distro_id}
-          bash ${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh
+        env:
+          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
+          TASK_ID: ${task_id}
+          MONGOSH_RUN_ONLY_IN_PACKAGE: ${mongosh_package}
+        binary: bash
+        args:
+          - ${PROJECT_DIRECTORY}/.evergreen/run-mongosh-integration-tests.sh
+  run mongosh package scope test:
+    - command: subprocess.exec
+      params:
+        working_dir: src
+        env:
+          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
+          TASK_ID: ${task_id}
+        binary: bash
+        args:
+          - ${PROJECT_DIRECTORY}/.evergreen/run-mongosh-scope-test.sh
   cleanup:
     - command: shell.exec
       params:
@@ -354,11 +412,18 @@ functions:
         working_dir: src
         script: |
           ${PREPARE_SHELL}
-          NODE_LTS_NAME=${NODE_LTS_NAME} MSVS_VERSION=${MSVS_VERSION} \
+          NODE_LTS_NAME=${NODE_LTS_NAME} NPM_OPTIONS=${NPM_OPTIONS}\
             bash ${PROJECT_DIRECTORY}/.evergreen/install-dependencies.sh
-    - command: expansions.update
+  install aws-credential-providers:
+    - command: shell.exec
+      type: setup
       params:
-        file: src/deps-expansion.yml
+        shell: bash
+        working_dir: src
+        script: |
+          ${PREPARE_SHELL}
+          source "${PROJECT_DIRECTORY}/.evergreen/init-nvm.sh"
+          npm install @aws-sdk/credential-providers
   run atlas tests:
     - command: shell.exec
       type: test
@@ -418,6 +483,8 @@ functions:
 
           export MONGODB_URI="${MONGODB_URI}"
 
+          export TEST_SOCKS5_CSFLE="${TEST_SOCKS5_CSFLE}"
+
           export SSL="${SSL}"
 
 
@@ -439,6 +506,7 @@ functions:
         script: |
           export PROJECT_DIRECTORY="$(pwd)"
           export KRB5_KEYTAB='${gssapi_auth_keytab_base64}'
+          export KRB5_NEW_KEYTAB='${gssapi_auth_new_keytab_base64}'
           export KRB5_PRINCIPAL='${gssapi_auth_principal}'
           export MONGODB_URI='${gssapi_auth_mongodb_uri}'
           export NODE_LTS_NAME='${NODE_LTS_NAME}'
@@ -502,7 +570,12 @@ functions:
               "iam_auth_assume_role_name" : "${iam_auth_assume_role_name}",
               "iam_auth_ec2_instance_account" : "${iam_auth_ec2_instance_account}",
               "iam_auth_ec2_instance_secret_access_key" : "${iam_auth_ec2_instance_secret_access_key}",
-              "iam_auth_ec2_instance_profile" : "${iam_auth_ec2_instance_profile}"
+              "iam_auth_ec2_instance_profile" : "${iam_auth_ec2_instance_profile}",
+              "iam_auth_assume_web_role_name": "${iam_auth_assume_web_role_name}",
+              "iam_web_identity_issuer": "${iam_web_identity_issuer}",
+              "iam_web_identity_rsa_key": "${iam_web_identity_rsa_key}",
+              "iam_web_identity_jwks_uri": "${iam_web_identity_jwks_uri}",
+              "iam_web_identity_token_file": "${iam_web_identity_token_file}"
           }
           EOF
   setup aws env:
@@ -510,20 +583,22 @@ functions:
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           cd -
   run aws auth test with regular aws credentials:
     - command: shell.exec
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_regular_aws.js
     - command: shell.exec
       type: test
@@ -549,10 +624,11 @@ functions:
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_assume_role.js
     - command: shell.exec
       type: test
@@ -582,13 +658,14 @@ functions:
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           # Write an empty prepare_mongodb_aws so no auth environment variables
           # are set.
           echo "" > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
           cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo aws_e2e_ec2.js
     - command: shell.exec
       type: test
@@ -643,11 +720,59 @@ functions:
         script: |
           ${PREPARE_SHELL}
           ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
+  run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set:
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        silent: true
+        script: |
+          cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
+          . ./activate_venv.sh
+          ${MONGODB_BINARIES}/mongo --verbose aws_e2e_web_identity.js
+          cd -
+          cat <<'EOF' > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
+            export AWS_WEB_IDENTITY_TOKEN_FILE=${iam_web_identity_token_file}
+            export AWS_ROLE_ARN=${iam_auth_assume_web_role_name}
+            export AWS_ROLE_SESSION_NAME='test'
+            export MONGODB_URI="mongodb://localhost:27017/aws?authMechanism=MONGODB-AWS"
+          EOF
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        script: |
+          ${PREPARE_SHELL}
+          ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
+  run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset:
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        silent: true
+        script: |
+          cd ${DRIVERS_TOOLS}/.evergreen/auth_aws
+          . ./activate_venv.sh
+          ${MONGODB_BINARIES}/mongo --verbose aws_e2e_web_identity.js
+          cd -
+          cat <<'EOF' > "${PROJECT_DIRECTORY}/prepare_mongodb_aws.sh"
+            export AWS_WEB_IDENTITY_TOKEN_FILE=${iam_web_identity_token_file}
+            export AWS_ROLE_ARN=${iam_auth_assume_web_role_name}
+            export MONGODB_URI="mongodb://localhost:27017/aws?authMechanism=MONGODB-AWS"
+          EOF
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        script: |
+          ${PREPARE_SHELL}
+          ${PROJECT_DIRECTORY}/.evergreen/run-mongodb-aws-test.sh
   run aws ECS auth test:
     - command: shell.exec
       type: test
       params:
         working_dir: src
+        shell: bash
         script: |
           ${PREPARE_SHELL}
           AUTH_AWS_DIR=${DRIVERS_TOOLS}/.evergreen/auth_aws
@@ -668,7 +793,7 @@ functions:
           EOF
 
           cat setup.js
-          . ./activate_venv.sh
+          . ./activate-authawsvenv.sh
           ${MONGODB_BINARIES}/mongo --nodb setup.js aws_e2e_ecs.js
   run-ocsp-test:
     - command: shell.exec
@@ -773,17 +898,6 @@ functions:
           echo "CRYPT_SHARED_LIB_PATH: $CRYPT_SHARED_LIB_PATH"
 
           bash ${PROJECT_DIRECTORY}/.evergreen/run-custom-csfle-tests.sh
-  run custom snappy tests:
-    - command: subprocess.exec
-      params:
-        working_dir: src
-        timeout_secs: 60
-        env:
-          MONGODB_URI: ${MONGODB_URI}
-          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-        binary: bash
-        args:
-          - ${PROJECT_DIRECTORY}/.evergreen/run-snappy-version-test.sh
   run lambda handler example tests:
     - command: subprocess.exec
       params:
@@ -816,19 +930,6 @@ functions:
         script: |
           ${PREPARE_SHELL}
           ${PROJECT_DIRECTORY}/.evergreen/run-lambda-aws-tests.sh
-  run bson-ext test:
-    - command: subprocess.exec
-      type: test
-      params:
-        working_dir: src
-        timeout_secs: 60
-        env:
-          PROJECT_DIRECTORY: ${PROJECT_DIRECTORY}
-          MONGODB_URI: ${MONGODB_URI}
-          TEST_NPM_SCRIPT: ${TEST_NPM_SCRIPT}
-        binary: bash
-        args:
-          - ${PROJECT_DIRECTORY}/.evergreen/run-bson-ext-test.sh
   upload test results:
     - command: attach.xunit_results
       params:
@@ -854,21 +955,45 @@ functions:
   download and merge coverage:
     - command: shell.exec
       params:
-        silent: true
         working_dir: src
         script: |
           ${PREPARE_SHELL}
           export AWS_ACCESS_KEY_ID=${aws_key}
           export AWS_SECRET_ACCESS_KEY=${aws_secret}
+
           # Download all the task coverage files.
-          # TODO NODE-3897 - finish this function.  the code below this point is untested because
-          #   aws s3 cp fails due to permissions errors
-          aws s3 cp --recursive s3://mciuploads/mongo-node-driver/${revision}/${version_id}/ coverage/
+          # NOTE: All coverage files are too large for V8 to handle the resulting call to
+          #       JSON.stringify from within nyc, so with stick to Fermiun to include the
+          #       compression tests.
+          aws s3 cp --recursive s3://mciuploads/mongo-node-driver/${revision}/${version_id}/ \
+            coverage/ \
+            --exclude "*rhel80-large*" \
+            --include "*fermiun"
 
+          # npx does not recognize the dependency so install it directly.
+          npm install @istanbuljs/nyc-config-typescript
+          cd coverage
+          sed -i'' -e 's/\/data\/mci\/.\{32\}\/src\///g' *
+          ls -la
+          cd ..
           npx nyc merge coverage/ merged-coverage/coverage.json
-          npx nyc report -t merged-coverage --reporter=html --report-dir output
+          npx nyc report -t merged-coverage/ --reporter=html --report-dir coverage-report
 
-          aws s3 cp output/lcov-report s3://mciuploads/mongo-node-driver/${revision}/${version_id}//lcov-report/
+          aws s3 cp coverage-report/ \
+            s3://mciuploads/mongo-node-driver/${revision}/${version_id}/coverage/ \
+            --recursive \
+            --acl public-read \
+            --region us-east-1
+    - command: s3.put
+      params:
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file: src/coverage-report/index.html
+        remote_file: mongo-node-driver/${revision}/${version_id}/coverage/index.html
+        bucket: mciuploads
+        permissions: public-read
+        content_type: text/html
+        display_name: Coverage Report HTML
   run spec driver benchmarks:
     - command: subprocess.exec
       type: test
@@ -885,6 +1010,8 @@ tasks:
     tags:
       - serverless
     commands:
+      - func: install dependencies
+      - func: bootstrap kms servers
       - func: run serverless tests
   - name: run-spec-benchmark-tests
     tags:
@@ -894,7 +1021,7 @@ tasks:
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: gallium
+          NODE_LTS_NAME: hydrogen
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: rapid
@@ -904,6 +1031,87 @@ tasks:
       - command: perf.send
         params:
           file: src/results.json
+  - name: test-gcpkms-task
+    commands:
+      - func: install dependencies
+      - command: subprocess.exec
+        type: setup
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+          args:
+            - src/.evergreen/setup-gcp-testing.sh
+      - command: subprocess.exec
+        type: test
+        params:
+          working_dir: src
+          binary: bash
+          env:
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+            GCPKMS_CMD: env EXPECTED_GCPKMS_OUTCOME=success bash src/.evergreen/run-gcp-kms-tests.sh
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/gcpkms/run-command.sh
+  - name: test-gcpkms-fail-task
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: server
+          AUTH: noauth
+      - command: subprocess.exec
+        type: test
+        params:
+          binary: bash
+          env:
+            EXPECTED_GCPKMS_OUTCOME: failure
+          args:
+            - src/.evergreen/run-gcp-kms-tests.sh
+  - name: test-azurekms-task
+    commands:
+      - func: install dependencies
+      - command: subprocess.exec
+        type: setup
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - src/.evergreen/copy-driver-to-azure.sh
+      - command: subprocess.exec
+        type: test
+        params:
+          working_dir: src
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            AZUREKMS_CMD: env EXPECTED_AZUREKMS_OUTCOME=success bash src/.evergreen/run-azure-kms-tests.sh
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/azurekms/run-command.sh
+  - name: test-azurekms-fail-task
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: server
+          AUTH: noauth
+      - command: subprocess.exec
+        type: test
+        params:
+          binary: bash
+          env:
+            EXPECTED_AZUREKMS_OUTCOME: failure
+          args:
+            - src/.evergreen/run-azure-kms-tests.sh
   - name: test-latest-server
     tags:
       - latest
@@ -1233,7 +1441,6 @@ tasks:
       - func: run tests
         vars:
           MONGODB_API_VERSION: '1'
-          NO_EXIT: ''
   - name: test-atlas-connectivity
     tags:
       - atlas-connect
@@ -1307,6 +1514,22 @@ tasks:
     commands:
       - func: install dependencies
       - func: run ldap tests
+  - name: test-auth-oidc
+    tags:
+      - latest
+      - replica_set
+      - oidc
+    commands:
+      - func: install dependencies
+      - func: bootstrap oidc
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: replica_set
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-oidc.json
+      - func: setup oidc roles
+      - func: run oidc tests aws
   - name: test-socks5
     tags: []
     commands:
@@ -1317,6 +1540,19 @@ tasks:
           TOPOLOGY: replica_set
       - func: bootstrap kms servers
       - func: run socks5 tests
+  - name: test-socks5-csfle
+    tags:
+      - socks5-csfle
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          TOPOLOGY: replica_set
+      - func: bootstrap kms servers
+      - func: run socks5 tests
+        vars:
+          TEST_SOCKS5_CSFLE: 'true'
   - name: test-socks5-tls
     tags: []
     commands:
@@ -1355,32 +1591,6 @@ tasks:
           AUTH: auth
           COMPRESSOR: snappy
       - func: run-compression-tests
-  - name: test-lambda-example
-    tags:
-      - latest
-      - lambda
-    commands:
-      - func: install dependencies
-      - func: bootstrap mongo-orchestration
-        vars:
-          VERSION: rapid
-          TOPOLOGY: server
-      - func: run lambda handler example tests
-  - name: test-lambda-aws-auth-example
-    tags:
-      - latest
-      - lambda
-    commands:
-      - func: install dependencies
-      - func: bootstrap mongo-orchestration
-        vars:
-          VERSION: rapid
-          AUTH: auth
-          ORCHESTRATION_FILE: auth-aws.json
-          TOPOLOGY: server
-      - func: add aws auth variables to file
-      - func: setup aws env
-      - func: run lambda handler example tests with aws auth
   - name: test-tls-support-latest
     tags:
       - tls-support
@@ -1439,6 +1649,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-auth-test-with-regular-aws-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1451,6 +1662,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-auth-test-with-assume-role-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1463,6 +1675,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-auth-test-with-aws-EC2-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1475,6 +1688,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1487,6 +1701,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1499,6 +1714,7 @@ tasks:
   - name: aws-latest-auth-test-run-aws-ECS-auth-test
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1508,9 +1724,135 @@ tasks:
       - func: add aws auth variables to file
       - func: setup aws env
       - func: run aws ECS auth test
+  - name: aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
+  - name: aws-latest-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with regular aws credentials
+  - name: aws-latest-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with assume role credentials
+  - name: aws-latest-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws EC2 credentials
+  - name: aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials as environment variables
+  - name: >-
+      aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials and session token as environment variables
+  - name: aws-latest-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws ECS auth test
+  - name: >-
+      aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: >-
+      aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: latest
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
   - name: aws-6.0-auth-test-run-aws-auth-test-with-regular-aws-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1523,6 +1865,7 @@ tasks:
   - name: aws-6.0-auth-test-run-aws-auth-test-with-assume-role-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1535,6 +1878,7 @@ tasks:
   - name: aws-6.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1547,6 +1891,7 @@ tasks:
   - name: aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1559,6 +1904,7 @@ tasks:
   - name: aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1571,6 +1917,7 @@ tasks:
   - name: aws-6.0-auth-test-run-aws-ECS-auth-test
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '6.0'
@@ -1580,9 +1927,134 @@ tasks:
       - func: add aws auth variables to file
       - func: setup aws env
       - func: run aws ECS auth test
+  - name: aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
+  - name: aws-6.0-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with regular aws credentials
+  - name: aws-6.0-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with assume role credentials
+  - name: aws-6.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws EC2 credentials
+  - name: aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials as environment variables
+  - name: >-
+      aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials and session token as environment variables
+  - name: aws-6.0-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws ECS auth test
+  - name: >-
+      aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '6.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
   - name: aws-5.0-auth-test-run-aws-auth-test-with-regular-aws-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1595,6 +2067,7 @@ tasks:
   - name: aws-5.0-auth-test-run-aws-auth-test-with-assume-role-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1607,6 +2080,7 @@ tasks:
   - name: aws-5.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1619,6 +2093,7 @@ tasks:
   - name: aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1631,6 +2106,7 @@ tasks:
   - name: aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1643,6 +2119,7 @@ tasks:
   - name: aws-5.0-auth-test-run-aws-ECS-auth-test
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1652,9 +2129,134 @@ tasks:
       - func: add aws auth variables to file
       - func: setup aws env
       - func: run aws ECS auth test
+  - name: aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
+  - name: aws-5.0-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with regular aws credentials
+  - name: aws-5.0-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with assume role credentials
+  - name: aws-5.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws EC2 credentials
+  - name: aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials as environment variables
+  - name: >-
+      aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials and session token as environment variables
+  - name: aws-5.0-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws ECS auth test
+  - name: >-
+      aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '5.0'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
   - name: aws-4.4-auth-test-run-aws-auth-test-with-regular-aws-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1667,6 +2269,7 @@ tasks:
   - name: aws-4.4-auth-test-run-aws-auth-test-with-assume-role-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1679,6 +2282,7 @@ tasks:
   - name: aws-4.4-auth-test-run-aws-auth-test-with-aws-EC2-credentials
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1691,6 +2295,7 @@ tasks:
   - name: aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1703,6 +2308,7 @@ tasks:
   - name: aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1715,6 +2321,7 @@ tasks:
   - name: aws-4.4-auth-test-run-aws-ECS-auth-test
     commands:
       - func: install dependencies
+      - func: install aws-credential-providers
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '4.4'
@@ -1724,13 +2331,137 @@ tasks:
       - func: add aws auth variables to file
       - func: setup aws env
       - func: run aws ECS auth test
+  - name: aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+    commands:
+      - func: install dependencies
+      - func: install aws-credential-providers
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
+  - name: aws-4.4-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with regular aws credentials
+  - name: aws-4.4-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with assume role credentials
+  - name: aws-4.4-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws EC2 credentials
+  - name: aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials as environment variables
+  - name: >-
+      aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test with aws credentials and session token as environment variables
+  - name: aws-4.4-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws ECS auth test
+  - name: >-
+      aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME unset
+  - name: aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: '4.4'
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run aws auth test AssumeRoleWithWebIdentity with AWS_ROLE_SESSION_NAME set
   - name: run-unit-tests
     tags:
       - run-unit-tests
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: run unit tests
   - name: run-lint-checks
     tags:
@@ -1738,96 +2469,64 @@ tasks:
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: run lint checks
-  - name: run-typescript-next
+  - name: check-types-typescript-next
     tags:
-      - run-typescript-next
+      - check-types-typescript-next
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
-      - func: run typescript next
-  - name: run-typescript-current
+          NODE_LTS_NAME: fermium
+      - func: check types
+        vars:
+          TS_VERSION: next
+  - name: compile-driver-typescript-current
     tags:
-      - run-typescript-current
+      - compile-driver-typescript-current
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
-      - func: run typescript current
-  - name: run-typescript-oldest
+          NODE_LTS_NAME: fermium
+      - func: compile driver
+        vars:
+          TS_VERSION: current
+  - name: check-types-typescript-current
     tags:
-      - run-typescript-oldest
+      - check-types-typescript-current
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
-      - func: run typescript oldest
-  - name: run-mongosh-integration-tests
+          NODE_LTS_NAME: fermium
+      - func: check types
+        vars:
+          TS_VERSION: current
+  - name: check-types-typescript-4.1.6
     tags:
-      - run-mongosh-integration-tests
-    exec_timeout_secs: 3600
+      - check-types-typescript-4.1.6
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: gallium
-      - func: run mongosh integration tests
-  - name: run-custom-snappy-tests
-    tags:
-      - run-custom-dependency-tests
+          NODE_LTS_NAME: fermium
+      - func: check types
+        vars:
+          TS_VERSION: 4.1.6
+  - name: download-and-merge-coverage
+    tags: []
     commands:
-      - func: install dependencies
-        vars:
-          NODE_LTS_NAME: erbium
-      - func: bootstrap mongo-orchestration
-        vars:
-          VERSION: '5.0'
-          TOPOLOGY: server
-          AUTH: auth
-      - name: run-custom-snappy-tests
-        func: run custom snappy tests
-  - name: run-bson-ext-integration
-    tags:
-      - run-custom-dependency-tests
-    commands:
-      - func: install dependencies
-        vars:
-          NODE_LTS_NAME: erbium
-      - func: bootstrap mongo-orchestration
-        vars:
-          VERSION: '5.0'
-          TOPOLOGY: server
-          AUTH: auth
-      - name: run-bson-ext-integration
-        func: run bson-ext test
-        vars:
-          NODE_LTS_NAME: erbium
-          TEST_NPM_SCRIPT: check:test
-  - name: run-bson-ext-unit
-    tags:
-      - run-custom-dependency-tests
-    commands:
-      - func: install dependencies
-        vars:
-          NODE_LTS_NAME: erbium
-      - func: bootstrap mongo-orchestration
-        vars:
-          VERSION: '5.0'
-          TOPOLOGY: server
-          AUTH: auth
-      - name: run-bson-ext-unit
-        func: run bson-ext test
-        vars:
-          NODE_LTS_NAME: erbium
-          TEST_NPM_SCRIPT: check:unit
+      - func: download and merge coverage
+    depends_on:
+      - name: '*'
+        variant: '*'
+        status: '*'
+        patch_optional: true
   - name: run-custom-csfle-tests-5.0-pinned-commit
     tags:
       - run-custom-dependency-tests
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1835,14 +2534,14 @@ tasks:
       - func: bootstrap kms servers
       - func: run custom csfle tests
         vars:
-          CSFLE_GIT_REF: c071d5a8d59ddcad40f22887a12bdb374c2f86af
+          CSFLE_GIT_REF: cd7e938619aa52ce652d13690780df5f383bbef0
   - name: run-custom-csfle-tests-5.0-master
     tags:
       - run-custom-dependency-tests
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: '5.0'
@@ -1857,7 +2556,7 @@ tasks:
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: rapid
@@ -1865,14 +2564,14 @@ tasks:
       - func: bootstrap kms servers
       - func: run custom csfle tests
         vars:
-          CSFLE_GIT_REF: c071d5a8d59ddcad40f22887a12bdb374c2f86af
+          CSFLE_GIT_REF: cd7e938619aa52ce652d13690780df5f383bbef0
   - name: run-custom-csfle-tests-rapid-master
     tags:
       - run-custom-dependency-tests
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: rapid
@@ -1887,7 +2586,7 @@ tasks:
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -1895,14 +2594,14 @@ tasks:
       - func: bootstrap kms servers
       - func: run custom csfle tests
         vars:
-          CSFLE_GIT_REF: c071d5a8d59ddcad40f22887a12bdb374c2f86af
+          CSFLE_GIT_REF: cd7e938619aa52ce652d13690780df5f383bbef0
   - name: run-custom-csfle-tests-latest-master
     tags:
       - run-custom-dependency-tests
     commands:
       - func: install dependencies
         vars:
-          NODE_LTS_NAME: erbium
+          NODE_LTS_NAME: fermium
       - func: bootstrap mongo-orchestration
         vars:
           VERSION: latest
@@ -2247,13 +2946,131 @@ tasks:
           AUTH: noauth
       - func: bootstrap kms servers
       - func: run tests
+  - name: test-lambda-example
+    tags:
+      - latest
+      - lambda
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: rapid
+          TOPOLOGY: server
+      - func: run lambda handler example tests
+  - name: test-lambda-aws-auth-example
+    tags:
+      - latest
+      - lambda
+    commands:
+      - func: install dependencies
+      - func: bootstrap mongo-orchestration
+        vars:
+          VERSION: rapid
+          AUTH: auth
+          ORCHESTRATION_FILE: auth-aws.json
+          TOPOLOGY: server
+      - func: add aws auth variables to file
+      - func: setup aws env
+      - func: run lambda handler example tests with aws auth
+  - name: run-mongosh-browser-repl
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: browser-repl
+  - name: run-mongosh-browser-runtime-electron
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: browser-runtime-electron
+  - name: run-mongosh-cli-repl
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: cli-repl
+  - name: run-mongosh-connectivity-tests
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: connectivity-tests
+  - name: run-mongosh-mongosh
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: mongosh
+  - name: run-mongosh-node-runtime-worker-thread
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: node-runtime-worker-thread
+  - name: run-mongosh-service-provider-server
+    tags:
+      - run-mongosh-integration-tests
+    depends_on: compile-mongosh
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh tests for package
+        vars:
+          mongosh_package: service-provider-server
+  - name: compile-mongosh
+    tags:
+      - run-mongosh-integration-tests
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: compile mongosh
+  - name: verify-mongosh-scopes
+    tags:
+      - run-mongosh-integration-tests
+    commands:
+      - func: install dependencies
+        vars:
+          NODE_LTS_NAME: gallium
+      - func: run mongosh package scope test
 task_groups:
   - name: serverless_task_group
     setup_group_can_fail_task: true
     setup_group_timeout_secs: 1800
     setup_group:
       - func: fetch source
-      - func: prepare resources
       - command: shell.exec
         params:
           shell: bash
@@ -2282,9 +3099,66 @@ task_groups:
               bash ${DRIVERS_TOOLS}/.evergreen/serverless/delete-instance.sh
     tasks:
       - .serverless
+  - name: test_gcpkms_task_group
+    setup_group_can_fail_task: true
+    setup_group_timeout_secs: 1800
+    setup_group:
+      - func: fetch source
+      - command: subprocess.exec
+        params:
+          working_dir: src
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            testgcpkms_key_file: ${gcpkms_key_file}
+            GCPKMS_SERVICEACCOUNT: ${gcpkms_service_account}
+            GCPKMS_DRIVERS_TOOLS: ${DRIVERS_TOOLS}
+            GCPKMS_MACHINETYPE: e2-standard-4
+          args:
+            - .evergreen/setup-gcp-instance.sh
+      - command: expansions.update
+        params:
+          file: src/testgcpkms-expansions.yml
+    teardown_group:
+      - command: subprocess.exec
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          env:
+            GCPKMS_GCLOUD: ${GCPKMS_GCLOUD}
+            GCPKMS_PROJECT: ${GCPKMS_PROJECT}
+            GCPKMS_ZONE: ${GCPKMS_ZONE}
+            GCPKMS_INSTANCENAME: ${GCPKMS_INSTANCENAME}
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/gcpkms/delete-instance.sh
+    tasks:
+      - test-gcpkms-task
+  - name: test_azurekms_task_group
+    setup_group_can_fail_task: true
+    setup_group_timeout_secs: 1800
+    setup_group:
+      - func: fetch source
+      - command: subprocess.exec
+        params:
+          working_dir: src
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - .evergreen/setup-azure-vm.sh
+      - command: expansions.update
+        params:
+          file: src/testazurekms-expansions.yml
+    teardown_group:
+      - command: subprocess.exec
+        params:
+          binary: bash
+          add_expansions_to_env: true
+          args:
+            - ${DRIVERS_TOOLS}/.evergreen/csfle/azurekms/delete-vm.sh
+    tasks:
+      - test-azurekms-task
 pre:
   - func: fetch source
-  - func: prepare resources
   - func: windows fix
   - func: fix absolute paths
   - func: make files executable
@@ -2297,19 +3171,22 @@ ignore:
 buildvariants:
   - name: performance-tests
     display_name: Performance Test
-    run_on: ubuntu1804-large
+    run_on: rhel80-large
     tasks:
       - run-spec-benchmark-tests
-  - name: ubuntu-18.04-erbium
-    display_name: Ubuntu 18.04 Node Erbium
-    run_on: ubuntu1804-large
+  - name: rhel80-large-fermium
+    display_name: rhel8 Node14
+    run_on: rhel80-large
     expansions:
-      NODE_LTS_NAME: erbium
+      NODE_LTS_NAME: fermium
       CLIENT_ENCRYPTION: true
-    tasks: &ref_0
+    tasks:
       - test-latest-server
       - test-latest-replica_set
       - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
       - test-6.0-server
       - test-6.0-replica_set
       - test-6.0-sharded_cluster
@@ -2336,7 +3213,9 @@ buildvariants:
       - test-latest-load-balanced
       - test-auth-kerberos
       - test-auth-ldap
+      - test-auth-oidc
       - test-socks5
+      - test-socks5-csfle
       - test-socks5-tls
       - test-zstd-compression
       - test-snappy-compression
@@ -2345,16 +3224,9 @@ buildvariants:
       - test-tls-support-5.0
       - test-tls-support-4.4
       - test-tls-support-4.2
-  - name: ubuntu-18.04-fermium
-    display_name: Ubuntu 18.04 Node Fermium
-    run_on: ubuntu1804-large
-    expansions:
-      NODE_LTS_NAME: fermium
-      CLIENT_ENCRYPTION: true
-    tasks: *ref_0
-  - name: ubuntu-18.04-gallium
-    display_name: Ubuntu 18.04 Node Gallium
-    run_on: ubuntu1804-large
+  - name: rhel80-large-gallium
+    display_name: rhel8 Node16
+    run_on: rhel80-large
     expansions:
       NODE_LTS_NAME: gallium
       CLIENT_ENCRYPTION: true
@@ -2362,6 +3234,9 @@ buildvariants:
       - test-latest-server
       - test-latest-replica_set
       - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
       - test-6.0-server
       - test-6.0-replica_set
       - test-6.0-sharded_cluster
@@ -2388,23 +3263,28 @@ buildvariants:
       - test-latest-load-balanced
       - test-auth-kerberos
       - test-auth-ldap
+      - test-auth-oidc
       - test-socks5
+      - test-socks5-csfle
       - test-socks5-tls
       - test-tls-support-latest
       - test-tls-support-6.0
       - test-tls-support-5.0
       - test-tls-support-4.4
       - test-tls-support-4.2
-  - name: windows-64-vs2019-erbium
-    display_name: Windows (VS2019) Node Erbium
-    run_on: windows-64-vs2019-large
+  - name: rhel80-large-hydrogen
+    display_name: rhel8 Node18
+    run_on: rhel80-large
     expansions:
-      NODE_LTS_NAME: erbium
-      MSVS_VERSION: 2019
-    tasks: &ref_1
+      NODE_LTS_NAME: hydrogen
+      CLIENT_ENCRYPTION: true
+    tasks:
       - test-latest-server
       - test-latest-replica_set
       - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
       - test-6.0-server
       - test-6.0-replica_set
       - test-6.0-sharded_cluster
@@ -2424,33 +3304,160 @@ buildvariants:
       - test-3.6-replica_set
       - test-3.6-sharded_cluster
       - test-latest-server-v1-api
+      - test-atlas-connectivity
       - test-atlas-data-lake
+      - test-5.0-load-balanced
+      - test-6.0-load-balanced
+      - test-latest-load-balanced
+      - test-auth-kerberos
+      - test-auth-ldap
+      - test-auth-oidc
       - test-socks5
+      - test-socks5-csfle
       - test-socks5-tls
-      - test-zstd-compression
-      - test-snappy-compression
+      - test-tls-support-latest
+      - test-tls-support-6.0
+      - test-tls-support-5.0
+      - test-tls-support-4.4
+      - test-tls-support-4.2
+  - name: rhel80-large-node-latest
+    display_name: rhel8 Node Latest
+    run_on: rhel80-large
+    expansions:
+      NODE_LTS_NAME: latest
+      CLIENT_ENCRYPTION: true
+    tasks:
+      - test-latest-server
+      - test-latest-replica_set
+      - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
+      - test-6.0-server
+      - test-6.0-replica_set
+      - test-6.0-sharded_cluster
+      - test-5.0-server
+      - test-5.0-replica_set
+      - test-5.0-sharded_cluster
+      - test-4.4-server
+      - test-4.4-replica_set
+      - test-4.4-sharded_cluster
+      - test-4.2-server
+      - test-4.2-replica_set
+      - test-4.2-sharded_cluster
+      - test-4.0-server
+      - test-4.0-replica_set
+      - test-4.0-sharded_cluster
+      - test-3.6-server
+      - test-3.6-replica_set
+      - test-3.6-sharded_cluster
+      - test-latest-server-v1-api
+      - test-atlas-connectivity
+      - test-atlas-data-lake
+      - test-5.0-load-balanced
+      - test-6.0-load-balanced
+      - test-latest-load-balanced
+      - test-auth-ldap
+      - test-auth-oidc
+      - test-socks5-csfle
+      - test-socks5-tls
       - test-tls-support-latest
       - test-tls-support-6.0
       - test-tls-support-5.0
       - test-tls-support-4.4
       - test-tls-support-4.2
   - name: windows-64-vs2019-fermium
-    display_name: Windows (VS2019) Node Fermium
+    display_name: Windows (VS2019) Node14
     run_on: windows-64-vs2019-large
     expansions:
       NODE_LTS_NAME: fermium
-      MSVS_VERSION: 2019
-    tasks: *ref_1
-  - name: windows-64-vs2019-gallium
-    display_name: Windows (VS2019) Node Gallium
-    run_on: windows-64-vs2019-large
-    expansions:
-      NODE_LTS_NAME: gallium
-      MSVS_VERSION: 2019
     tasks:
       - test-latest-server
       - test-latest-replica_set
       - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
+      - test-6.0-server
+      - test-6.0-replica_set
+      - test-6.0-sharded_cluster
+      - test-5.0-server
+      - test-5.0-replica_set
+      - test-5.0-sharded_cluster
+      - test-4.4-server
+      - test-4.4-replica_set
+      - test-4.4-sharded_cluster
+      - test-4.2-server
+      - test-4.2-replica_set
+      - test-4.2-sharded_cluster
+      - test-4.0-server
+      - test-4.0-replica_set
+      - test-4.0-sharded_cluster
+      - test-3.6-server
+      - test-3.6-replica_set
+      - test-3.6-sharded_cluster
+      - test-latest-server-v1-api
+      - test-atlas-data-lake
+      - test-socks5
+      - test-socks5-tls
+      - test-zstd-compression
+      - test-snappy-compression
+      - test-tls-support-latest
+      - test-tls-support-6.0
+      - test-tls-support-5.0
+      - test-tls-support-4.4
+      - test-tls-support-4.2
+  - name: windows-64-vs2019-gallium
+    display_name: Windows (VS2019) Node16
+    run_on: windows-64-vs2019-large
+    expansions:
+      NODE_LTS_NAME: gallium
+    tasks:
+      - test-latest-server
+      - test-latest-replica_set
+      - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
+      - test-6.0-server
+      - test-6.0-replica_set
+      - test-6.0-sharded_cluster
+      - test-5.0-server
+      - test-5.0-replica_set
+      - test-5.0-sharded_cluster
+      - test-4.4-server
+      - test-4.4-replica_set
+      - test-4.4-sharded_cluster
+      - test-4.2-server
+      - test-4.2-replica_set
+      - test-4.2-sharded_cluster
+      - test-4.0-server
+      - test-4.0-replica_set
+      - test-4.0-sharded_cluster
+      - test-3.6-server
+      - test-3.6-replica_set
+      - test-3.6-sharded_cluster
+      - test-latest-server-v1-api
+      - test-atlas-data-lake
+      - test-socks5
+      - test-socks5-tls
+      - test-tls-support-latest
+      - test-tls-support-6.0
+      - test-tls-support-5.0
+      - test-tls-support-4.4
+      - test-tls-support-4.2
+  - name: windows-64-vs2019-hydrogen
+    display_name: Windows (VS2019) Node18
+    run_on: windows-64-vs2019-large
+    expansions:
+      NODE_LTS_NAME: hydrogen
+    tasks:
+      - test-latest-server
+      - test-latest-replica_set
+      - test-latest-sharded_cluster
+      - test-rapid-server
+      - test-rapid-replica_set
+      - test-rapid-sharded_cluster
       - test-6.0-server
       - test-6.0-replica_set
       - test-6.0-sharded_cluster
@@ -2479,32 +3486,46 @@ buildvariants:
       - test-tls-support-4.4
       - test-tls-support-4.2
   - name: macos-1100
-    display_name: MacOS 11 Node Gallium
+    display_name: MacOS 11 Node18
     run_on: macos-1100
     expansions:
-      NODE_LTS_NAME: gallium
+      NODE_LTS_NAME: hydrogen
       CLIENT_ENCRYPTION: true
     tasks:
       - test-rapid-server
   - name: lint
     display_name: lint
-    run_on: ubuntu1804-large
+    run_on: rhel80-large
     tasks:
       - run-unit-tests
       - run-lint-checks
-      - run-typescript-current
-      - run-typescript-oldest
-      - run-typescript-next
+      - check-types-typescript-next
+      - compile-driver-typescript-current
+      - check-types-typescript-current
+      - check-types-typescript-4.1.6
+  - name: generate-combined-coverage
+    display_name: Generate Combined Coverage
+    run_on: rhel80-large
+    tasks:
+      - download-and-merge-coverage
   - name: mongosh_integration_tests
     display_name: mongosh integration tests
-    run_on: ubuntu1804-test
+    run_on: ubuntu1804-large
     tasks:
-      - run-mongosh-integration-tests
+      - run-mongosh-browser-repl
+      - run-mongosh-browser-runtime-electron
+      - run-mongosh-cli-repl
+      - run-mongosh-connectivity-tests
+      - run-mongosh-mongosh
+      - run-mongosh-node-runtime-worker-thread
+      - run-mongosh-service-provider-server
+      - compile-mongosh
+      - verify-mongosh-scopes
   - name: ubuntu1804-test-mongodb-aws
     display_name: MONGODB-AWS Auth test
-    run_on: ubuntu1804-test
+    run_on: ubuntu1804-large
     expansions:
-      NODE_LTS_NAME: erbium
+      NODE_LTS_NAME: fermium
     tasks:
       - aws-latest-auth-test-run-aws-auth-test-with-regular-aws-credentials
       - aws-latest-auth-test-run-aws-auth-test-with-assume-role-credentials
@@ -2512,47 +3533,109 @@ buildvariants:
       - aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
       - aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
       - aws-latest-auth-test-run-aws-ECS-auth-test
+      - aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+      - aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+      - aws-latest-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+      - aws-latest-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+      - aws-latest-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+      - aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+      - >-
+        aws-latest-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+      - aws-latest-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+      - >-
+        aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+      - >-
+        aws-latest-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
       - aws-6.0-auth-test-run-aws-auth-test-with-regular-aws-credentials
       - aws-6.0-auth-test-run-aws-auth-test-with-assume-role-credentials
       - aws-6.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials
       - aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
       - aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
       - aws-6.0-auth-test-run-aws-ECS-auth-test
+      - aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+      - aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+      - aws-6.0-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+      - aws-6.0-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+      - aws-6.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+      - aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+      - >-
+        aws-6.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+      - aws-6.0-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+      - >-
+        aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+      - >-
+        aws-6.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
       - aws-5.0-auth-test-run-aws-auth-test-with-regular-aws-credentials
       - aws-5.0-auth-test-run-aws-auth-test-with-assume-role-credentials
       - aws-5.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials
       - aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
       - aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
       - aws-5.0-auth-test-run-aws-ECS-auth-test
+      - aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+      - aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+      - aws-5.0-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+      - aws-5.0-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+      - aws-5.0-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+      - aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+      - >-
+        aws-5.0-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+      - aws-5.0-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+      - >-
+        aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+      - >-
+        aws-5.0-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
       - aws-4.4-auth-test-run-aws-auth-test-with-regular-aws-credentials
       - aws-4.4-auth-test-run-aws-auth-test-with-assume-role-credentials
       - aws-4.4-auth-test-run-aws-auth-test-with-aws-EC2-credentials
       - aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables
       - aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables
       - aws-4.4-auth-test-run-aws-ECS-auth-test
-  - name: ubuntu1804-custom-dependency-tests
+      - aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset
+      - aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set
+      - aws-4.4-auth-test-run-aws-auth-test-with-regular-aws-credentials-no-peer-dependencies
+      - aws-4.4-auth-test-run-aws-auth-test-with-assume-role-credentials-no-peer-dependencies
+      - aws-4.4-auth-test-run-aws-auth-test-with-aws-EC2-credentials-no-peer-dependencies
+      - aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-as-environment-variables-no-peer-dependencies
+      - >-
+        aws-4.4-auth-test-run-aws-auth-test-with-aws-credentials-and-session-token-as-environment-variables-no-peer-dependencies
+      - aws-4.4-auth-test-run-aws-ECS-auth-test-no-peer-dependencies
+      - >-
+        aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-unset-no-peer-dependencies
+      - >-
+        aws-4.4-auth-test-run-aws-auth-test-AssumeRoleWithWebIdentity-with-AWS_ROLE_SESSION_NAME-set-no-peer-dependencies
+  - name: rhel8-custom-dependency-tests
     display_name: Custom Dependency Version Test
-    run_on: ubuntu1804-large
+    run_on: rhel80-large
     tasks:
-      - run-custom-snappy-tests
-      - run-bson-ext-integration
-      - run-bson-ext-unit
       - run-custom-csfle-tests-5.0-pinned-commit
       - run-custom-csfle-tests-5.0-master
       - run-custom-csfle-tests-rapid-pinned-commit
       - run-custom-csfle-tests-rapid-master
       - run-custom-csfle-tests-latest-pinned-commit
       - run-custom-csfle-tests-latest-master
-  - name: ubuntu1804-test-serverless
+  - name: rhel8-test-serverless
     display_name: Serverless Test
-    run_on: ubuntu1804-test
+    run_on: rhel80-large
     expansions:
-      NODE_LTS_NAME: erbium
+      NODE_LTS_NAME: fermium
     tasks:
       - serverless_task_group
-  - name: ubuntu1804-no-auth-tests
+  - name: rhel8-test-gcp-kms
+    display_name: GCP KMS Test
+    run_on: debian11-small
+    tasks:
+      - test_gcpkms_task_group
+      - test-gcpkms-fail-task
+  - name: debian11-test-azure-kms
+    display_name: Azure KMS Test
+    run_on: debian11-small
+    batchtime: 20160
+    tasks:
+      - test_azurekms_task_group
+      - test-azurekms-fail-task
+  - name: rhel8-no-auth-tests
     display_name: No Auth Tests
-    run_on: ubuntu1804-large
+    run_on: rhel80-large
     expansions:
       CLIENT_ENCRYPTION: true
     tasks:
@@ -2580,9 +3663,9 @@ buildvariants:
       - test-3.6-server-noauth
       - test-3.6-replica_set-noauth
       - test-3.6-sharded_cluster-noauth
-  - name: ubuntu1804-test-lambda
+  - name: rhel8-test-lambda
     display_name: AWS Lambda handler tests
-    run_on: ubuntu1804-test
+    run_on: rhel80-large
     tasks:
       - test-lambda-example
       - test-lambda-aws-auth-example

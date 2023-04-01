@@ -1,7 +1,7 @@
 'use strict';
 
-const { ReadPreference } = require('../../../src');
-const { Topology } = require('../../../src/sdam/topology');
+const { ReadPreference } = require('../../mongodb');
+const { Topology } = require('../../mongodb');
 const chai = require('chai');
 chai.use(require('chai-subset'));
 
@@ -53,132 +53,6 @@ describe('ReadPreference', function () {
           expect(err).to.not.exist;
           client.topology.command = command;
 
-          client.close(done);
-        });
-      });
-    }
-  });
-
-  it('Should correctly apply collection level read Preference to mapReduce', {
-    metadata: { requires: { mongodb: '>=2.6.0', topology: ['single', 'ssl'] } },
-
-    test: function (done) {
-      var configuration = this.configuration;
-      var client = configuration.newClient(configuration.writeConcernMax(), { maxPoolSize: 1 });
-      client.connect(function (err, client) {
-        var db = client.db(configuration.db);
-        expect(err).to.not.exist;
-        // Set read preference
-        var collection = db.collection('read_pref_1', {
-          readPreference: ReadPreference.SECONDARY_PREFERRED
-        });
-        // Save checkout function
-        var command = client.topology.command;
-        // Set up our checker method
-        client.topology.command = function () {
-          var args = Array.prototype.slice.call(arguments, 0);
-          if (args[0] === 'integration_tests.$cmd') {
-            test.equal(ReadPreference.SECONDARY_PREFERRED, args[2].readPreference.mode);
-          }
-
-          return command.apply(db.s.topology, args);
-        };
-
-        // Map function
-        var map = function () {
-          emit(this.user_id, 1); // eslint-disable-line
-        };
-        // Reduce function
-        var reduce = function (/* k, vals */) {
-          return 1;
-        };
-
-        // Perform the map reduce
-        collection.mapReduce(map, reduce, { out: { inline: 1 } }, function (/* err */) {
-          // expect(err).to.not.exist;
-
-          client.topology.command = command;
-
-          client.close(done);
-        });
-      });
-    }
-  });
-
-  it(
-    'Should correctly apply collection level read Preference to mapReduce backward compatibility',
-    {
-      metadata: { requires: { mongodb: '>=2.6.0', topology: ['single', 'ssl'] } },
-
-      test: function (done) {
-        var configuration = this.configuration;
-        var client = configuration.newClient(configuration.writeConcernMax(), { maxPoolSize: 1 });
-        client.connect(function (err, client) {
-          var db = client.db(configuration.db);
-          expect(err).to.not.exist;
-          // Set read preference
-          var collection = db.collection('read_pref_1', {
-            readPreference: ReadPreference.SECONDARY_PREFERRED
-          });
-          // Save checkout function
-          var command = client.topology.command;
-          // Set up our checker method
-          client.topology.command = function () {
-            var args = Array.prototype.slice.call(arguments, 0);
-            if (args[0] === 'integration_tests.$cmd') {
-              test.equal(ReadPreference.SECONDARY_PREFERRED, args[2].readPreference.mode);
-            }
-
-            return command.apply(db.s.topology, args);
-          };
-
-          // Map function
-          var map = function () {
-            emit(this.user_id, 1); // eslint-disable-line
-          };
-
-          // Reduce function
-          var reduce = function (/* k, vals */) {
-            return 1;
-          };
-
-          // Perform the map reduce
-          collection.mapReduce(map, reduce, { out: 'inline' }, function (/* err */) {
-            // expect(err).to.not.exist;
-            client.topology.command = command;
-            client.close(done);
-          });
-        });
-      }
-    }
-  );
-
-  it('Should fail due to not using mapReduce inline with read preference', {
-    metadata: { requires: { mongodb: '>=2.6.0', topology: ['single', 'ssl'] } },
-
-    test: function (done) {
-      var configuration = this.configuration;
-      var client = configuration.newClient(configuration.writeConcernMax(), { maxPoolSize: 1 });
-      client.connect(function (err, client) {
-        var db = client.db(configuration.db);
-        expect(err).to.not.exist;
-        // Set read preference
-        var collection = db.collection('read_pref_1', {
-          readPreference: ReadPreference.SECONDARY_PREFERRED
-        });
-        // Map function
-        var map = function () {
-          emit(this.user_id, 1); // eslint-disable-line
-        };
-
-        // Reduce function
-        var reduce = function (/* k, vals */) {
-          return 1;
-        };
-
-        // Perform the map reduce
-        collection.mapReduce(map, reduce, { out: { append: 'test' } }, function (err) {
-          test.notEqual(err, null);
           client.close(done);
         });
       });
@@ -531,18 +405,25 @@ describe('ReadPreference', function () {
 
   context('should enforce fixed primary read preference', function () {
     const collectionName = 'ddl_collection';
+    let client;
 
     beforeEach(async function () {
       const configuration = this.configuration;
-      const client = this.configuration.newClient(configuration.writeConcernMax(), {
+      const utilClient = this.configuration.newClient(configuration.writeConcernMax(), {
         readPreference: 'primaryPreferred'
       });
 
-      const db = client.db(configuration.db);
+      const db = utilClient.db(configuration.db);
       await db.addUser('default', 'pass', { roles: 'readWrite' }).catch(() => null);
       await db.createCollection('before_collection').catch(() => null);
       await db.createIndex(collectionName, { aloha: 1 }).catch(() => null);
 
+      await utilClient.close();
+
+      client = await this.configuration.newClient(configuration.writeConcernMax()).connect();
+    });
+
+    afterEach(async () => {
       await client.close();
     });
 
@@ -558,14 +439,13 @@ describe('ReadPreference', function () {
       'Db#dropDatabase': []
     };
 
-    Object.keys(methods).forEach(operation => {
+    for (const operation of Object.keys(methods)) {
       it(`${operation}`, {
         metadata: {
           requires: { topology: ['replicaset', 'sharded'] }
         },
         test: async function () {
           const configuration = this.configuration;
-          const client = this.configuration.newClient(configuration.writeConcernMax());
           const db = client.db(configuration.db);
           const args = methods[operation];
           const [parentId, method] = operation.split('#');
@@ -577,20 +457,12 @@ describe('ReadPreference', function () {
           await parent[method](...args);
 
           expect(selectServerSpy.called).to.equal(true);
-          if (typeof selectServerSpy.args[0][0] === 'function') {
-            expect(selectServerSpy)
-              .nested.property('args[0][1].readPreference.mode')
-              .to.equal(ReadPreference.PRIMARY);
-          } else {
-            expect(selectServerSpy)
-              .nested.property('args[0][0].readPreference.mode')
-              .to.equal(ReadPreference.PRIMARY);
-          }
-
-          await client.close();
+          const selectionCall = selectServerSpy.getCall(0);
+          expect(selectionCall.args[0]).to.not.be.a('function');
+          expect(selectionCall).nested.property('args[0].mode').to.equal(ReadPreference.PRIMARY);
         }
       });
-    });
+    }
   });
 
   it('should respect readPreference from uri', {

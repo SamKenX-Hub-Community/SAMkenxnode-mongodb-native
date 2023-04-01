@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
-import { ClientSession, MongoClient, ReadConcern } from '../../../src/index';
+import { ClientSession, MongoClient, ReadConcern } from '../../mongodb';
 
 // TODO(NODE-3345): Improve these tests to use expect assertions more
 
@@ -48,6 +48,7 @@ async function runTransactionWithRetry(
 
 async function updateEmployeeInfo(client: MongoClient, session: ClientSession) {
   session.startTransaction({
+    readPreference: 'primary',
     readConcern: new ReadConcern('available'), // NODE-3297
     writeConcern: { w: 'majority' }
   });

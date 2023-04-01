@@ -1,7 +1,7 @@
 runOn:
   - minServerVersion: "6.0.0"
     # FLE 2 Encrypted collections are not supported on standalone.
-    topology: [ "replicaset", "sharded" ]
+    topology: [ "replicaset", "sharded", "load-balanced" ]
 database_name: &database_name "default"
 collection_name: &collection_name "default"
 data: []
@@ -15,9 +15,9 @@ tests:
           local: {'key': {'$binary': {'base64': 'Mng0NCt4ZHVUYUJCa1kxNkVyNUR1QURhZ2h2UzR2d2RrZzh0cFBwM3R6NmdWMDFBMUN3YkQ5aXRRMkhGRGdQV09wOGVNYUMxT2k3NjZKelhaQmRCZGJkTXVyZG9uSjFk', 'subType': '00'}}}
         encryptedFieldsMap: {
           "default.default": {
-            "escCollection": "esc",
-            "eccCollection": "ecc",
-            "ecocCollection": "ecoc",
+            "escCollection": "enxcol_.default.esc",
+            "eccCollection": "enxcol_.default.ecc",
+            "ecocCollection": "enxcol_.default.ecoc",
             "fields": []
           }
         }

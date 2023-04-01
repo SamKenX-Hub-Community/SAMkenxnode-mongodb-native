@@ -1,5 +1,5 @@
-current = "4.9 Driver"
-mongoDBManual = "https://docs.mongodb.com/drivers/node/"
+current = "5.1 Driver"
+mongoDBManual = "https://www.mongodb.com/docs/drivers/node/"
 
 [[versions]]
 version = "Next Driver"
@@ -9,8 +9,57 @@ usesMongoDBManual = true
 tag = "Next"
 
 [[versions]]
-version = "4.9 Driver"
+version = "5.1 Driver"
 status = "latest"
+api = "./5.1"
+usesMongoDBManual = true
+tag = "5.1"
+
+[[versions]]
+version = "5.0 Driver"
+status = "supported"
+api = "./5.0"
+usesMongoDBManual = true
+tag = "5.0"
+
+[[versions]]
+version = "4.14 Driver"
+status = "supported"
+api = "./4.14"
+usesMongoDBManual = true
+tag = "4.14"
+
+[[versions]]
+version = "4.13 Driver"
+status = "supported"
+api = "./4.13"
+usesMongoDBManual = true
+tag = "4.13"
+
+[[versions]]
+version = "4.12 Driver"
+status = "supported"
+api = "./4.12"
+usesMongoDBManual = true
+tag = "4.12"
+
+[[versions]]
+version = "4.11 Driver"
+status = "supported"
+api = "./4.11"
+usesMongoDBManual = true
+tag = "4.11"
+
+[[versions]]
+version = "4.10 Driver"
+status = "supported"
+api = "./4.10"
+usesMongoDBManual = true
+tag = "4.10"
+
+[[versions]]
+version = "4.9 Driver"
+status = "supported"
 api = "./4.9"
 usesMongoDBManual = true
 tag = "4.9"

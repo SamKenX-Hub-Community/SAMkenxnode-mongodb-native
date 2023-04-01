@@ -1,11 +1,17 @@
 import { expect } from 'chai';
 
-import { Callback, ExecutionResult, MongoClient, Server } from '../../../src';
-import { AbstractCursor, AbstractCursorOptions } from '../../../src/cursor/abstract_cursor';
-import { ClientSession } from '../../../src/sessions';
-import { ns } from '../../../src/utils';
+import {
+  AbstractCursor,
+  AbstractCursorOptions,
+  Callback,
+  ClientSession,
+  ExecutionResult,
+  MongoClient,
+  ns,
+  Server
+} from '../../mongodb';
 
-/** Minimal do nothing cursor to focus on testing the base cusor behavior */
+/** Minimal do nothing cursor to focus on testing the base cursor behavior */
 class ConcreteCursor extends AbstractCursor {
   constructor(client: MongoClient, options: AbstractCursorOptions = {}) {
     super(client, ns('test.test'), options);

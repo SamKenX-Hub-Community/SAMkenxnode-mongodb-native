@@ -1,18 +1,20 @@
 import { expect } from 'chai';
-import * as sinon from 'sinon';
 
-import { LEGACY_HELLO_COMMAND } from '../../src/constants';
-import { MongoRuntimeError } from '../../src/error';
 import {
   BufferPool,
+  ByteUtils,
+  compareObjectId,
   eachAsync,
   HostAddress,
   isHello,
-  makeInterruptibleAsyncInterval,
+  LEGACY_HELLO_COMMAND,
+  List,
+  maybeCallback,
   MongoDBNamespace,
+  MongoRuntimeError,
+  ObjectId,
   shuffle
-} from '../../src/utils';
-import { createTimerSandbox } from './timer_sandbox';
+} from '../mongodb';
 
 describe('driver utils', function () {
   context('eachAsync()', function () {
@@ -46,296 +48,7 @@ describe('driver utils', function () {
     });
   });
 
-  describe('#makeInterruptibleAsyncInterval', function () {
-    let timerSandbox, clock, executor, fnSpy;
-
-    beforeEach(function () {
-      timerSandbox = createTimerSandbox();
-      clock = sinon.useFakeTimers();
-      fnSpy = sinon.spy(cb => {
-        cb();
-      });
-    });
-
-    afterEach(function () {
-      if (executor) {
-        executor.stop();
-      }
-      clock.restore();
-      timerSandbox.restore();
-    });
-
-    context('when the immediate option is provided', function () {
-      it('executes the function immediately and schedules the next execution on the interval', function () {
-        executor = makeInterruptibleAsyncInterval(fnSpy, {
-          immediate: true,
-          minInterval: 10,
-          interval: 30
-        });
-        // expect immediate invocation
-        expect(fnSpy.calledOnce).to.be.true;
-        // advance clock by less than the scheduled interval to ensure we don't execute early
-        clock.tick(29);
-        expect(fnSpy.calledOnce).to.be.true;
-        // advance clock to the interval
-        clock.tick(1);
-        expect(fnSpy.calledTwice).to.be.true;
-      });
-    });
-
-    context('when the immediate option is not provided', function () {
-      it('executes the function on the provided interval', function () {
-        executor = makeInterruptibleAsyncInterval(fnSpy, { minInterval: 10, interval: 30 });
-        // advance clock by less than the scheduled interval to ensure we don't execute early
-        clock.tick(29);
-        expect(fnSpy.callCount).to.equal(0);
-        // advance clock to the interval
-        clock.tick(1);
-        expect(fnSpy.calledOnce).to.be.true;
-        // advance clock by the interval
-        clock.tick(30);
-        expect(fnSpy.calledTwice).to.be.true;
-      });
-    });
-
-    describe('#wake', function () {
-      context('when the time until next call is negative', () => {
-        // somehow we missed the execution, due to an unreliable clock
-
-        it('should execute immediately and schedule the next execution on the interval if this is the first wake', () => {
-          let fakeClockHasTicked = false;
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30,
-            clock: () => {
-              if (fakeClockHasTicked) {
-                return 81;
-              }
-              fakeClockHasTicked = true;
-              return 50;
-            }
-          });
-
-          // tick the environment clock by a smaller amount than the interval
-          clock.tick(2);
-          // sanity check to make sure we haven't called execute yet
-          expect(fnSpy.callCount).to.equal(0);
-          executor.wake();
-          // expect immediate execution since expected next call time was 50 + 30 = 80, but the clock shows 81
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by more than minInterval but less than full interval to ensure we're scheduling correctly
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by the full interval to make sure the scheduled call executes
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-
-        it('should execute immediately and schedule the next execution on the interval if this is a repeated wake and the current execution is not rescheduled', () => {
-          let fakeClockTickCount = 0;
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30,
-            clock: () => {
-              if (fakeClockTickCount === 0) {
-                // on init, return arbitrary starting time
-                fakeClockTickCount++;
-                return 50;
-              }
-              if (fakeClockTickCount === 1) {
-                // expected execution time is 80
-                // on first wake return a time so less than minInterval is left and no need to reschedule
-                fakeClockTickCount++;
-                return 71;
-              }
-              return 81;
-            }
-          });
-
-          // tick the clock by a small amount before and after the wake to make sure no unexpected async things are happening
-          clock.tick(11);
-          executor.wake();
-          clock.tick(5);
-          expect(fnSpy.callCount).to.equal(0);
-          // call our second wake that gets the overdue timer, so expect immediate execution
-          executor.wake();
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by more than minInterval but less than full interval to ensure we're scheduling correctly
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by the full interval to make sure the scheduled call executes
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-
-        it('should execute immediately and schedule the next execution on the interval if this is a repeated wake even if the current execution is rescheduled', () => {
-          let fakeClockTickCount = 0;
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30,
-            clock: () => {
-              if (fakeClockTickCount === 0) {
-                // on init, return arbitrary starting time
-                fakeClockTickCount++;
-                return 50;
-              }
-              if (fakeClockTickCount === 1) {
-                // expected execution time is 80
-                // on first wake return a time so that more than minInterval is left
-                fakeClockTickCount++;
-                return 61;
-              }
-              return 81;
-            }
-          });
-
-          // tick the clock by a small amount before and after the wake to make sure no unexpected async things are happening
-          clock.tick(2);
-          executor.wake();
-          clock.tick(9);
-          expect(fnSpy.callCount).to.equal(0);
-          // call our second wake that gets the overdue timer, so expect immediate execution
-          executor.wake();
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by more than minInterval but less than full interval to ensure we're scheduling correctly
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          // move forward by the full interval to make sure the scheduled call executes
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-      });
-
-      context('when the time until next call is less than the minInterval', () => {
-        // we can't make it go any faster, so we should let the scheduled execution run
-
-        it('should execute on the interval if this is the first wake', () => {
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30
-          });
-          // tick the environment clock so that less than minInterval is left
-          clock.tick(21);
-          executor.wake();
-          // move forward to just before exepected execution time
-          clock.tick(8);
-          expect(fnSpy.callCount).to.equal(0);
-          // move forward to the full interval to make sure the scheduled call executes
-          clock.tick(1);
-          expect(fnSpy.calledOnce).to.be.true;
-          // check to make sure the next execution runs as expected
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-
-        it('should execute on the original interval if this is a repeated wake and the current execution is not rescheduled', () => {
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30
-          });
-          // tick the environment clock so that less than minInterval is left
-          clock.tick(21);
-          executor.wake();
-          // tick the environment clock some more so that the next wake is called at a different time
-          clock.tick(2);
-          executor.wake();
-          // tick to just before the expected execution time
-          clock.tick(6);
-          expect(fnSpy.callCount).to.equal(0);
-          // tick up to 20 for the expected execution
-          clock.tick(1);
-          expect(fnSpy.calledOnce).to.be.true;
-          // check to make sure the next execution runs as expected
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-
-        it('should execute on the minInterval from the first wake if this is a repeated wake and the current execution is rescheduled', () => {
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30
-          });
-          // tick the environment clock so that more than minInterval is left
-          clock.tick(13);
-          executor.wake();
-          // the first wake should move up the execution to occur at 23 ticks from the start
-          // we tick 8 to get to 21, so that less than minInterval is left on the original interval expected execution
-          clock.tick(8);
-          executor.wake();
-          // now we tick to just before the rescheduled execution time
-          clock.tick(1);
-          expect(fnSpy.callCount).to.equal(0);
-          // tick up to 23 for the expected execution
-          clock.tick(1);
-          expect(fnSpy.calledOnce).to.be.true;
-          // check to make sure the next execution runs as expected
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-      });
-
-      context('when the time until next call is more than the minInterval', () => {
-        // expedite the execution to minInterval
-
-        it('should execute on the minInterval if this is the first wake', () => {
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30
-          });
-          // tick the environment clock so that more than minInterval is left
-          clock.tick(3);
-          executor.wake();
-          // the first wake should move up the execution to occur at 13 ticks from the start
-          // we tick to just before the rescheduled execution time
-          clock.tick(9);
-          expect(fnSpy.callCount).to.equal(0);
-          // tick up to 13 for the expected execution
-          clock.tick(1);
-          expect(fnSpy.calledOnce).to.be.true;
-          // check to make sure the next execution runs as expected
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-
-        it('should execute on the minInterval from the first wake if this is a repeated wake', () => {
-          // NOTE: under regular circumstances, if the second wake is early enough to warrant a reschedule
-          // then the first wake must have already warranted a reschedule
-          executor = makeInterruptibleAsyncInterval(fnSpy, {
-            minInterval: 10,
-            interval: 30
-          });
-          // tick the environment clock so that more than minInterval is left
-          clock.tick(3);
-          executor.wake();
-          // the first wake should move up the execution to occur at 13 ticks from the start
-          // we tick a bit more so that more than minInterval is still left and call our repeated wake
-          clock.tick(2);
-          executor.wake();
-          // tick up to just before the expected execution
-          clock.tick(7);
-          expect(fnSpy.callCount).to.equal(0);
-          // now go up to 13
-          clock.tick(1);
-          expect(fnSpy.calledOnce).to.be.true;
-          // check to make sure the next execution runs as expected
-          clock.tick(29);
-          expect(fnSpy.calledOnce).to.be.true;
-          clock.tick(1);
-          expect(fnSpy.calledTwice).to.be.true;
-        });
-      });
-    });
-  });
-
-  context('new BufferPool()', function () {
+  describe('class BufferPool', function () {
     it('should report the correct length', function () {
       const buffer = new BufferPool();
       buffer.append(Buffer.from([0, 1]));
@@ -344,44 +57,105 @@ describe('driver utils', function () {
       expect(buffer).property('length').to.equal(6);
     });
 
-    it('return an empty buffer if too many bytes requested', function () {
-      const buffer = new BufferPool();
-      buffer.append(Buffer.from([0, 1, 2, 3]));
-      const data = buffer.read(6);
-      expect(data).to.have.length(0);
-      expect(buffer).property('length').to.equal(4);
+    it('should have a readonly length', () => {
+      // @ts-expect-error: checking for readonly runtime behavior
+      expect(() => (new BufferPool().length = 3)).to.throw(TypeError);
     });
 
-    context('peek', function () {
-      it('exact size', function () {
+    describe('getInt32()', function () {
+      it('should return null when pool has less than an int32 sized totalByteLength', () => {
         const buffer = new BufferPool();
-        buffer.append(Buffer.from([0, 1]));
-        const data = buffer.peek(2);
-        expect(data).to.eql(Buffer.from([0, 1]));
-        expect(buffer).property('length').to.equal(2);
+        buffer.append(Buffer.from([1, 0, 0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.be.null;
+        expect(buffer).property('length').to.equal(3);
       });
 
-      it('within first buffer', function () {
+      it('should return number when pool has exactly an int32 sized totalByteLength', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1, 0, 0, 0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when pool has more than an int32 sized buffer first in the list', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1, 0, 0, 0]));
+        buffer.append(Buffer.from([2, 0, 0, 0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 8);
+      });
+
+      it('should return number when int32 is split across multiple buffers 1, 3', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1]));
+        buffer.append(Buffer.from([0, 0, 0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when int32 is split across multiple buffers 2, 2', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1, 0]));
+        buffer.append(Buffer.from([0, 0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when int32 is split across multiple buffers 3, 1', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1, 0, 0]));
+        buffer.append(Buffer.from([0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when int32 is split across multiple buffers 1, 2, 1', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1]));
+        buffer.append(Buffer.from([0, 0]));
+        buffer.append(Buffer.from([0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when int32 is split across multiple buffers 2, 1, 1', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1, 0]));
+        buffer.append(Buffer.from([0]));
+        buffer.append(Buffer.from([0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+
+      it('should return number when int32 is split across multiple buffers 1, 1, 1, 1', () => {
+        const buffer = new BufferPool();
+        buffer.append(Buffer.from([1]));
+        buffer.append(Buffer.from([0]));
+        buffer.append(Buffer.from([0]));
+        buffer.append(Buffer.from([0]));
+        const int32 = buffer.getInt32();
+        expect(int32).to.equal(1);
+        expect(buffer).property('length', 4);
+      });
+    });
+
+    describe('read()', function () {
+      it('return an empty buffer if too many bytes requested', function () {
         const buffer = new BufferPool();
         buffer.append(Buffer.from([0, 1, 2, 3]));
-        const data = buffer.peek(2);
-        expect(data).to.eql(Buffer.from([0, 1]));
-        expect(buffer).property('length').to.equal(4);
+        const data = buffer.read(6);
+        expect(data).to.have.length(0);
+        expect(buffer).property('length', 4);
       });
 
-      it('across multiple buffers', function () {
-        const buffer = new BufferPool();
-        buffer.append(Buffer.from([0, 1]));
-        buffer.append(Buffer.from([2, 3]));
-        buffer.append(Buffer.from([4, 5]));
-        expect(buffer).property('length').to.equal(6);
-        const data = buffer.peek(5);
-        expect(data).to.eql(Buffer.from([0, 1, 2, 3, 4]));
-        expect(buffer).property('length').to.equal(6);
-      });
-    });
-
-    context('read', function () {
       it('should throw an error if a negative size is requested', function () {
         const buffer = new BufferPool();
         expect(() => buffer.read(-1)).to.throw(/Argument "size" must be a non-negative number/);
@@ -397,7 +171,7 @@ describe('driver utils', function () {
         const buffer = new BufferPool();
         buffer.append(Buffer.from([0, 1]));
         const data = buffer.read(2);
-        expect(data).to.eql(Buffer.from([0, 1]));
+        expect(data).to.deep.equal(Buffer.from([0, 1]));
         expect(buffer).property('length').to.equal(0);
       });
 
@@ -405,7 +179,7 @@ describe('driver utils', function () {
         const buffer = new BufferPool();
         buffer.append(Buffer.from([0, 1, 2, 3]));
         const data = buffer.read(2);
-        expect(data).to.eql(Buffer.from([0, 1]));
+        expect(data).to.deep.equal(Buffer.from([0, 1]));
         expect(buffer).property('length').to.equal(2);
       });
 
@@ -416,9 +190,279 @@ describe('driver utils', function () {
         buffer.append(Buffer.from([4, 5]));
         expect(buffer).property('length').to.equal(6);
         const data = buffer.read(5);
-        expect(data).to.eql(Buffer.from([0, 1, 2, 3, 4]));
+        expect(data).to.deep.equal(Buffer.from([0, 1, 2, 3, 4]));
         expect(buffer).property('length').to.equal(1);
-        expect(buffer.read(1)).to.eql(Buffer.from([5]));
+        expect(buffer.read(1)).to.deep.equal(Buffer.from([5]));
+      });
+    });
+  });
+
+  describe('class List', () => {
+    describe('constructor()', () => {
+      it('should make an empty list', () => {
+        const list = new List();
+        expect(list).to.have.property('length', 0);
+        // Double checking some internals, if future code changes modify these expectations
+        // They are not intended to be set in stone or expected by users of the List class
+        expect(list).to.have.property('head').that.is.not.null;
+        expect(list).to.have.nested.property('head.value', null);
+        // @ts-expect-error: checking circularity is maintained
+        expect(list).to.have.nested.property('head.next').that.equals(list.head);
+        // @ts-expect-error: checking circularity is maintained
+        expect(list).to.have.nested.property('head.prev').that.equals(list.head);
+      });
+
+      it('should construct nodes with keys always in the same order', () => {
+        // declaring object literals with the exact same key ordering improves perf
+        const list = new List<number>();
+        list.push(2);
+        list.unshift(1);
+
+        // head node from constructor
+        expect(Object.keys(list.head)).to.deep.equal(['next', 'prev', 'value']);
+
+        // 1 node from push
+        expect(list.head.prev).to.have.property('value', 2);
+        expect(Object.keys(list.head.prev)).to.deep.equal(['next', 'prev', 'value']);
+
+        // 2 node from unshift
+        expect(list.head.next).to.have.property('value', 1);
+        expect(Object.keys(list.head.next)).to.deep.equal(['next', 'prev', 'value']);
+      });
+    });
+
+    describe('get length', () => {
+      it('should be readonly', () => {
+        const list = new List<number>();
+        expect(() => {
+          // @ts-expect-error: testing readonly-ness
+          list.length = 34;
+        }).to.throw(TypeError);
+      });
+
+      it('should increment by one with each item inserted into the list', () => {
+        const list = new List<number>();
+        expect(list).to.have.property('length', 0);
+        list.push(10);
+        expect(list).to.have.property('length', 1);
+        list.push(23);
+        expect(list).to.have.property('length', 2);
+        list.pushMany(Array.from({ length: 100 }, () => 22));
+        expect(list).to.have.property('length', 102);
+      });
+
+      it('should decrement by one with each item removed from the list', () => {
+        const list = new List<number>();
+        list.pushMany([1, 2, 3]);
+        expect(list).to.have.property('length', 3);
+        list.pop();
+        expect(list).to.have.property('length', 2);
+        list.pop();
+        expect(list).to.have.property('length', 1);
+        list.pop();
+        expect(list).to.have.property('length', 0);
+        list.pop();
+        expect(list).to.have.property('length', 0);
+      });
+
+      it('should not fall below zero if items are removed from empty list', () => {
+        const list = new List<number>();
+        expect(list).to.have.property('length', 0);
+        list.pop();
+        list.pop();
+        list.shift();
+        list.shift();
+        expect(list).to.have.property('length', 0);
+      });
+    });
+
+    describe('get [Symbol.toStringTag]()', () => {
+      it('should define a toStringTag getter', () => {
+        const list = new List<number>();
+        expect(Object.prototype.toString.call(list)).to.equal('[object List]');
+      });
+    });
+
+    describe('*[Symbol.iterator]()', () => {
+      it('should be instanceof GeneratorFunction', () => {
+        const list = new List<number>();
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        expect(list[Symbol.iterator]).to.be.instanceOf(function* () {}.constructor);
+      });
+
+      it('should only run generator for the number of items in the list', () => {
+        // Our implementation is circularly linked, so we want to confirm we stop where we started
+        const list = new List<number>();
+        list.push(1);
+        list.push(2);
+        list.push(3);
+        const iterator = list[Symbol.iterator]();
+
+        const first = iterator.next();
+        expect(first).to.have.property('done', false);
+        expect(first).to.have.property('value', 1);
+
+        const second = iterator.next();
+        expect(second).to.have.property('done', false);
+        expect(second).to.have.property('value', 2);
+
+        const third = iterator.next();
+        expect(third).to.have.property('done', false);
+        expect(third).to.have.property('value', 3);
+
+        // finished
+        const fourth = iterator.next();
+        expect(fourth).to.have.property('done', true);
+        expect(fourth).to.have.property('value', undefined);
+
+        // beyond finished
+        const fifth = iterator.next();
+        expect(fifth).to.have.property('done', true);
+        expect(fifth).to.have.property('value', undefined);
+      });
+    });
+
+    describe('push()', () => {
+      it('should add an item to the end of a list', () => {
+        const list = new List<number>();
+        list.push(1);
+        list.push(2);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+
+      it('should support nullish values', () => {
+        const list = new List<null | undefined>();
+        list.push(null);
+        // @ts-expect-error: Checking if undefined pushes will not be ignored
+        list.push();
+        expect(Array.from(list)).to.deep.equal([null, undefined]);
+      });
+    });
+
+    describe('unshift()', () => {
+      it('should add an item to the start of a list', () => {
+        const list = new List<number>();
+        list.unshift(1);
+        list.unshift(2);
+        expect(Array.from(list)).to.deep.equal([2, 1]);
+      });
+
+      it('should support nullish values', () => {
+        const list = new List<null | undefined>();
+        list.unshift(null);
+        // @ts-expect-error: Checking if undefined pushes will not be ignored
+        list.unshift();
+        expect(Array.from(list)).to.deep.equal([undefined, null]);
+      });
+    });
+
+    describe('shift()', () => {
+      let list: List<number>;
+
+      beforeEach(() => {
+        list = new List();
+        // Just to make pushing not part of the tests here
+        list.push(1);
+        list.push(2);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+
+      it('should remove and return an item from the start of the list', () => {
+        const last = list.shift();
+        expect(last).to.equal(1);
+        expect(Array.from(list)).to.deep.equal([2]);
+      });
+
+      it('should return null when list is empty', () => {
+        const list = new List<number>();
+        expect(list.shift()).to.be.null;
+        expect(list.shift()).to.be.null;
+        expect(list.shift()).to.be.null;
+      });
+    });
+    describe('pop()', () => {
+      let list: List<number>;
+
+      beforeEach(() => {
+        list = new List();
+        // Just to make pushing not part of the tests here
+        list.push(1);
+        list.push(2);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+
+      it('should remove and return an item from the end of the list', () => {
+        const last = list.pop();
+        expect(last).to.equal(2);
+        expect(Array.from(list)).to.deep.equal([1]);
+      });
+
+      it('should return null when list is empty', () => {
+        const list = new List<number>();
+        expect(list.pop()).to.be.null;
+        expect(list.pop()).to.be.null;
+        expect(list.pop()).to.be.null;
+      });
+    });
+
+    describe('clear()', () => {
+      let list: List<number>;
+
+      beforeEach(() => {
+        list = new List();
+        // Just to make pushing not part of the tests here
+        list.push(1);
+        list.push(2);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+
+      it('should empty a list of all values', () => {
+        list.clear();
+        expect(list.length).to.equal(0);
+        // Double checking some internals, if future code changes modify these expectations
+        // They are not intended to be set in stone or expected by users of the List class
+        expect(list).to.have.property('head').that.is.not.null;
+        expect(list).to.have.nested.property('head.value', null);
+        // @ts-expect-error: checking circularity is maintained
+        expect(list).to.have.nested.property('head.next').that.equals(list.head);
+        // @ts-expect-error: checking circularity is maintained
+        expect(list).to.have.nested.property('head.prev').that.equals(list.head);
+      });
+    });
+
+    describe('first()', () => {
+      let list: List<number>;
+
+      beforeEach(() => {
+        list = new List();
+        // Just to make pushing not part of the tests here
+        list.push(1);
+        list.push(2);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+
+      it('should return the first item without removing it', () => {
+        expect(list.first()).to.equal(1);
+        expect(list.first()).to.equal(1);
+        expect(list.first()).to.equal(1);
+        expect(Array.from(list)).to.deep.equal([1, 2]);
+      });
+    });
+
+    describe('toString()', () => {
+      let list: List<number>;
+
+      beforeEach(() => {
+        list = new List();
+        // Just to make pushing not part of the tests here
+        list.push(1);
+        list.push(2);
+        list.push(3);
+        expect(Array.from(list)).to.deep.equal([1, 2, 3]);
+      });
+
+      it('should return string that describes links', () => {
+        expect(`${list}`).to.equal('head <=> 1 <=> 2 <=> 3 <=> head');
       });
     });
   });
@@ -598,27 +642,27 @@ describe('driver utils', function () {
       it('should handle decoded unix socket path', () => {
         const ha = new HostAddress(socketPath);
         expect(ha).to.have.property('socketPath', socketPath);
-        expect(ha).to.not.have.property('port');
+        expect(ha).to.have.property('port', undefined);
       });
 
       it('should handle encoded unix socket path', () => {
         const ha = new HostAddress(encodeURIComponent(socketPath));
         expect(ha).to.have.property('socketPath', socketPath);
-        expect(ha).to.not.have.property('port');
+        expect(ha).to.have.property('port', undefined);
       });
 
       it('should handle encoded unix socket path with an unencoded space', () => {
         const socketPathWithSpaces = '/tmp/some directory/mongodb-27017.sock';
         const ha = new HostAddress(socketPathWithSpaces);
         expect(ha).to.have.property('socketPath', socketPathWithSpaces);
-        expect(ha).to.not.have.property('port');
+        expect(ha).to.have.property('port', undefined);
       });
 
       it('should handle unix socket path that does not begin with a slash', () => {
         const socketPathWithoutSlash = 'my_local/directory/mustEndWith.sock';
         const ha = new HostAddress(socketPathWithoutSlash);
         expect(ha).to.have.property('socketPath', socketPathWithoutSlash);
-        expect(ha).to.not.have.property('port');
+        expect(ha).to.have.property('port', undefined);
       });
 
       it('should only set the socketPath property on HostAddress when hostString ends in .sock', () => {
@@ -627,8 +671,8 @@ describe('driver utils', function () {
         const hostnameThatEndsWithSock = 'iLoveJavascript.sock';
         const ha = new HostAddress(hostnameThatEndsWithSock);
         expect(ha).to.have.property('socketPath', hostnameThatEndsWithSock);
-        expect(ha).to.not.have.property('port');
-        expect(ha).to.not.have.property('host');
+        expect(ha).to.have.property('port', undefined);
+        expect(ha).to.have.property('host', undefined);
       });
 
       it('should set the host and port property on HostAddress even when hostname ends in .sock if there is a port number specified', () => {
@@ -636,9 +680,222 @@ describe('driver utils', function () {
         // the port number at the end of the hostname (even if it is the default)
         const hostnameThatEndsWithSockHasPort = 'iLoveJavascript.sock:27017';
         const ha = new HostAddress(hostnameThatEndsWithSockHasPort);
-        expect(ha).to.not.have.property('socketPath');
+        expect(ha).to.have.property('socketPath', undefined);
         expect(ha).to.have.property('host', 'iLoveJavascript.sock'.toLowerCase());
         expect(ha).to.have.property('port', 27017);
+      });
+    });
+  });
+
+  describe('maybeCallback()', () => {
+    it('should accept two arguments', () => {
+      expect(maybeCallback).to.have.lengthOf(2);
+    });
+
+    describe('when handling an error case', () => {
+      it('should pass the error to the callback provided', done => {
+        const superPromiseRejection = Promise.reject(new Error('fail'));
+        const result = maybeCallback(
+          () => superPromiseRejection,
+          (error, result) => {
+            try {
+              expect(result).to.not.exist;
+              expect(error).to.be.instanceOf(Error);
+              return done();
+            } catch (assertionError) {
+              return done(assertionError);
+            }
+          }
+        );
+        expect(result).to.be.undefined;
+      });
+
+      it('should return the rejected promise to the caller when no callback is provided', async () => {
+        const superPromiseRejection = Promise.reject(new Error('fail'));
+        const returnedPromise = maybeCallback(() => superPromiseRejection, undefined);
+        expect(returnedPromise).to.equal(superPromiseRejection);
+        // @ts-expect-error: There is no overload to change the return type not be nullish,
+        // and we do not want to add one in fear of making it too easy to neglect adding the callback argument
+        const thrownError = await returnedPromise.catch(error => error);
+        expect(thrownError).to.be.instanceOf(Error);
+      });
+
+      it('should not modify a rejection error promise', async () => {
+        class MyError extends Error {}
+        const driverError = Object.freeze(new MyError());
+        const rejection = Promise.reject(driverError);
+        // @ts-expect-error: There is no overload to change the return type not be nullish,
+        // and we do not want to add one in fear of making it too easy to neglect adding the callback argument
+        const thrownError = await maybeCallback(() => rejection, undefined).catch(error => error);
+        expect(thrownError).to.be.equal(driverError);
+      });
+
+      it('should not modify a rejection error when passed to callback', done => {
+        class MyError extends Error {}
+        const driverError = Object.freeze(new MyError());
+        const rejection = Promise.reject(driverError);
+        maybeCallback(
+          () => rejection,
+          error => {
+            try {
+              expect(error).to.exist;
+              expect(error).to.equal(driverError);
+              done();
+            } catch (assertionError) {
+              done(assertionError);
+            }
+          }
+        );
+      });
+    });
+
+    describe('when handling a success case', () => {
+      it('should pass the result and undefined error to the callback provided', done => {
+        const superPromiseSuccess = Promise.resolve(2);
+
+        const result = maybeCallback(
+          () => superPromiseSuccess,
+          (error, result) => {
+            try {
+              expect(error).to.be.undefined;
+              expect(result).to.equal(2);
+              done();
+            } catch (assertionError) {
+              done(assertionError);
+            }
+          }
+        );
+        expect(result).to.be.undefined;
+      });
+
+      it('should return the resolved promise to the caller when no callback is provided', async () => {
+        const superPromiseSuccess = Promise.resolve(2);
+        const result = maybeCallback(() => superPromiseSuccess);
+        expect(result).to.equal(superPromiseSuccess);
+        expect(await result).to.equal(2);
+      });
+    });
+  });
+
+  describe('compareObjectId()', () => {
+    const table = [
+      { oid1: null, oid2: null, result: 0 },
+      { oid1: undefined, oid2: null, result: 0 },
+      { oid1: null, oid2: undefined, result: 0 },
+      { oid1: undefined, oid2: undefined, result: 0 },
+      { oid1: new ObjectId('00'.repeat(12)), oid2: undefined, result: 1 },
+      { oid1: new ObjectId('00'.repeat(12)), oid2: null, result: 1 },
+      { oid1: undefined, oid2: new ObjectId('00'.repeat(12)), result: -1 },
+      { oid1: null, oid2: new ObjectId('00'.repeat(12)), result: -1 },
+      { oid1: new ObjectId('00'.repeat(12)), oid2: new ObjectId('00'.repeat(12)), result: 0 },
+      {
+        oid1: new ObjectId('00'.repeat(11) + '01'),
+        oid2: new ObjectId('00'.repeat(12)),
+        result: 1
+      },
+      {
+        oid1: new ObjectId('00'.repeat(12)),
+        oid2: new ObjectId('00'.repeat(11) + '01'),
+        result: -1
+      },
+      {
+        oid1: 2,
+        oid2: 1,
+        result: 'throws'
+      }
+    ];
+
+    for (const { oid1, oid2, result } of table) {
+      if (result === 'throws') {
+        it('passing non-objectId values throw', () =>
+          // @ts-expect-error: Passing bad values to ensure thrown error
+          expect(() => compareObjectId(oid1, oid2)).to.throw());
+        continue;
+      }
+
+      const title = `comparing ${oid1} to ${oid2} returns ${
+        result === 0 ? 'equal' : result === -1 ? 'less than' : 'greater than'
+      }`;
+      // @ts-expect-error: not narrowed based on numeric result, but these values are correct
+      it(title, () => expect(compareObjectId(oid1, oid2)).to.equal(result));
+    }
+  });
+
+  context('const ByteUtils', () => {
+    context('toLocalBufferType()', () => {
+      it('returns identical Node.js buffer instance when input is Buffer', () => {
+        const buffer = Buffer.from([1, 2, 3]);
+        // Note: **Not** a deep.equal check
+        expect(ByteUtils.toLocalBufferType(buffer)).to.equal(buffer);
+      });
+
+      it('returns new Node.js buffer instance when input is Uint8Array', () => {
+        const uint8array = new Uint8Array([1, 2, 3]);
+        expect(Buffer.isBuffer(ByteUtils.toLocalBufferType(uint8array))).to.be.true;
+      });
+
+      it('does not clone ArrayBuffer when creating a new Node.js Buffer', () => {
+        const uint8array = new Uint8Array([1, 2, 3]);
+        // Note: **Not** a deep.equal check
+        expect(ByteUtils.toLocalBufferType(uint8array).buffer).to.equal(uint8array.buffer);
+      });
+    });
+
+    context('equals()', () => {
+      it('is a function', () => expect(ByteUtils).property('equals').is.a('function'));
+
+      it('returns true for equal Buffer or Uint8Array', () => {
+        const buffer = Buffer.from([1, 2, 3]);
+        const uint8array = new Uint8Array([1, 2, 3]);
+
+        expect(ByteUtils.equals(buffer, uint8array)).to.be.true;
+        expect(ByteUtils.equals(uint8array, buffer)).to.be.true;
+        expect(ByteUtils.equals(uint8array, uint8array)).to.be.true;
+        expect(ByteUtils.equals(buffer, buffer)).to.be.true;
+      });
+
+      it('returns false for nonequal Buffer or Uint8Array', () => {
+        const buffer = Buffer.from([1, 2, 3]);
+        const uint8array = new Uint8Array([1, 2, 4]);
+
+        expect(ByteUtils.equals(buffer, uint8array)).to.be.false;
+        expect(ByteUtils.equals(uint8array, buffer)).to.be.false;
+      });
+    });
+
+    context('compare()', () => {
+      it('is a function', () => expect(ByteUtils).property('compare').is.a('function'));
+
+      it('returns 0 for equal Buffer or Uint8Array', () => {
+        const buffer = Buffer.from([1, 2, 3]);
+        const uint8array = new Uint8Array([1, 2, 3]);
+
+        expect(ByteUtils.compare(buffer, uint8array)).to.equal(0);
+        expect(ByteUtils.compare(uint8array, buffer)).to.equal(0);
+        expect(ByteUtils.compare(uint8array, uint8array)).to.equal(0);
+        expect(ByteUtils.compare(buffer, buffer)).to.equal(0);
+      });
+
+      it('returns +/- 1 for Buffer or UInt8Array if one is greater or less than', () => {
+        const buffer = Buffer.from([1, 2, 3]);
+        const uint8array = new Uint8Array([1, 2, 4]);
+
+        expect(ByteUtils.compare(buffer, uint8array)).to.equal(-1);
+        expect(ByteUtils.compare(uint8array, buffer)).to.equal(1);
+      });
+    });
+
+    context('toBase64()', () => {
+      it('is a function', () => expect(ByteUtils).property('toBase64').is.a('function'));
+
+      const oneTwoThreeBase64 = 'AQID';
+
+      it('converts a Buffer to a base64 string', () => {
+        expect(ByteUtils.toBase64(Buffer.from([1, 2, 3]))).to.equal(oneTwoThreeBase64);
+      });
+
+      it('converts a Uint8Array to a base64 string', () => {
+        expect(ByteUtils.toBase64(new Uint8Array([1, 2, 3]))).to.equal(oneTwoThreeBase64);
       });
     });
   });

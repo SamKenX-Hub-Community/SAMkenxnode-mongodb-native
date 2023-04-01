@@ -3,9 +3,9 @@
 const { EJSON } = require('bson');
 const { setupDatabase } = require('./../shared');
 const { expect } = require('chai');
-const { GridFSBucket } = require('../../../src');
+const { GridFSBucket } = require('../../mongodb');
 
-describe('GridFS', function () {
+describe('GridFS spec', function () {
   before(function () {
     return setupDatabase(this.configuration);
   });

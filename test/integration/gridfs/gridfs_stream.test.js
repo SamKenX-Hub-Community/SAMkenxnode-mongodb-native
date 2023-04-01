@@ -3,15 +3,19 @@
 const { Double } = require('bson');
 const stream = require('stream');
 const fs = require('fs');
-const { setupDatabase } = require('./../shared');
 const { expect } = require('chai');
-const { GridFSBucket, ObjectId } = require('../../../src');
+const { GridFSBucket, ObjectId } = require('../../mongodb');
 const sinon = require('sinon');
 const { sleep } = require('../../tools/utils');
 
 describe('GridFS Stream', function () {
-  before(function () {
-    return setupDatabase(this.configuration);
+  let client;
+  beforeEach(async function () {
+    client = this.configuration.newClient();
+  });
+
+  afterEach(async function () {
+    await client.close();
   });
 
   /**
@@ -357,32 +361,28 @@ describe('GridFS Stream', function () {
     metadata: { requires: { topology: ['single'] } },
 
     test(done) {
-      const configuration = this.configuration;
-      const client = configuration.newClient(configuration.writeConcernMax(), { maxPoolSize: 1 });
-      client.connect((err, client) => {
-        expect(err).to.not.exist;
-        const db = client.db(configuration.db);
-        const bucket = new GridFSBucket(db, {
-          bucketName: 'gridfsdownload',
-          chunkSizeBytes: 6000
-        });
-
-        const readStream = fs.createReadStream('./LICENSE.md');
-        const uploadStream = bucket.openUploadStream('teststart.dat');
-        uploadStream.once('finish', function () {
-          const downloadStream = bucket.openDownloadStreamByName('teststart.dat');
-
-          const events = [];
-          downloadStream.on('data', () => events.push('data'));
-          downloadStream.on('close', () => events.push('close'));
-          downloadStream.on('end', () => {
-            expect(events).to.eql(['data', 'data', 'close']);
-            client.close(done);
-          });
-        });
-
-        readStream.pipe(uploadStream);
+      const db = client.db();
+      const bucket = new GridFSBucket(db, {
+        bucketName: 'gridfsdownload',
+        chunkSizeBytes: 6000
       });
+
+      const readStream = fs.createReadStream('./LICENSE.md');
+      const uploadStream = bucket.openUploadStream('teststart.dat');
+      uploadStream.once('finish', function () {
+        const downloadStream = bucket.openDownloadStreamByName('teststart.dat');
+
+        const events = [];
+        downloadStream.on('data', () => events.push('data'));
+        downloadStream.on('close', () => events.push('close'));
+        downloadStream.on('end', () => {
+          expect(events).to.deep.equal(['data', 'data', 'close']);
+          expect(downloadStream).to.exist;
+          client.close(done);
+        });
+      });
+
+      readStream.pipe(uploadStream);
     }
   });
 
@@ -1002,57 +1002,42 @@ describe('GridFS Stream', function () {
     });
   });
 
-  /**
-   * Provide start and end parameters for file download to skip ahead x bytes and limit the total amount of bytes read to n
-   *
-   * @example-class GridFSBucket
-   * @example-method openDownloadStream
-   */
-  it('NODE-829 start/end options for openDownloadStream where start-end is < size of chunk', {
+  it('should return only end - start bytes when the end is within a chunk', {
     metadata: { requires: { topology: ['single'] } },
-
     test(done) {
-      const configuration = this.configuration;
-      const client = configuration.newClient(configuration.writeConcernMax(), { maxPoolSize: 1 });
-      client.connect(function (err, client) {
-        const db = client.db(configuration.db);
-        const bucket = new GridFSBucket(db, {
-          bucketName: 'gridfsdownload',
-          chunkSizeBytes: 20
-        });
+      // Provide start and end parameters for file download to skip
+      // ahead x bytes and limit the total amount of bytes read to n
+      const db = client.db();
 
-        const readStream = fs.createReadStream('./LICENSE.md');
-        const uploadStream = bucket.openUploadStream('teststart.dat');
+      const start = 1;
+      const end = 6;
 
-        uploadStream.once('finish', function () {
-          const downloadStream = bucket
-            .openDownloadStreamByName('teststart.dat', { start: 1 })
-            .end(6);
-
-          downloadStream.on('error', function (error) {
-            expect(error).to.not.exist;
-          });
-
-          let gotData = 0;
-          let str = '';
-          downloadStream.on('data', function (data) {
-            ++gotData;
-            str += data.toString('utf8');
-          });
-
-          downloadStream.on('end', function () {
-            // Depending on different versions of node, we may get
-            // different amounts of 'data' events. node 0.10 gives 2,
-            // node >= 0.12 gives 3. Either is correct, but we just
-            // care that we got between 1 and 3, and got the right result
-            expect(gotData >= 1 && gotData <= 3).to.equal(true);
-            expect(str).to.equal('pache');
-            client.close(done);
-          });
-        });
-
-        readStream.pipe(uploadStream);
+      const bucket = new GridFSBucket(db, {
+        bucketName: 'gridfsdownload',
+        chunkSizeBytes: 20
       });
+
+      const readStream = fs.createReadStream('./LICENSE.md');
+      const uploadStream = bucket.openUploadStream('teststart.dat');
+
+      uploadStream.once('finish', function () {
+        const downloadStream = bucket.openDownloadStreamByName('teststart.dat', { start }).end(end);
+
+        downloadStream.on('error', done);
+
+        let str = '';
+        downloadStream.on('data', function (data) {
+          str += data.toString('utf8');
+        });
+
+        downloadStream.on('end', function () {
+          expect(str).to.equal('pache');
+          expect(str).to.have.lengthOf(end - start);
+          client.close(done);
+        });
+      });
+
+      readStream.pipe(uploadStream);
     }
   });
 

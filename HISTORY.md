@@ -2,6 +2,184 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [5.1.0](https://github.com/mongodb/node-mongodb-native/compare/v5.0.1...v5.1.0) (2023-02-23)
+
+
+### Features
+
+* **NODE-3445:** add support for AssumeRoleWithWebIdentity in aws authentication ([#3556](https://github.com/mongodb/node-mongodb-native/issues/3556)) ([e8a30b1](https://github.com/mongodb/node-mongodb-native/commit/e8a30b15c8ec6caac770fa08f1201e6b95a5270d))
+* **NODE-4877:** Add support for useBigInt64 ([#3519](https://github.com/mongodb/node-mongodb-native/issues/3519)) ([917668c](https://github.com/mongodb/node-mongodb-native/commit/917668c0bc42dbfa0a00869daa223f953f28c2e2))
+* **NODE-5034:** support OIDC auth options ([#3557](https://github.com/mongodb/node-mongodb-native/issues/3557)) ([20a4fec](https://github.com/mongodb/node-mongodb-native/commit/20a4fec5fa013c41f525f8c8c465b8f0db380bb2))
+* **NODE-5050:** support GCP automatic credential fetch for CSFLE ([#3574](https://github.com/mongodb/node-mongodb-native/issues/3574)) ([722a4a6](https://github.com/mongodb/node-mongodb-native/commit/722a4a6c613e4c169b51f14251a8fb4bebc1cf2a))
+
+
+### Bug Fixes
+
+* **NODE-5044:** Write Concern 0 Must Not Affect Read Operations ([#3541](https://github.com/mongodb/node-mongodb-native/issues/3541)) ([#3575](https://github.com/mongodb/node-mongodb-native/issues/3575)) ([10146a4](https://github.com/mongodb/node-mongodb-native/commit/10146a42fcc8d84cd07fb26bde9b2926deee6f1e))
+* **NODE-5052:** prevent cursor and changestream close logic from running more than once ([#3562](https://github.com/mongodb/node-mongodb-native/issues/3562)) ([71d0d79](https://github.com/mongodb/node-mongodb-native/commit/71d0d79e012e298be2307a73c097494072224bdb))
+* **NODE-5064:** consolidate connection cleanup logic and ensure socket is always closed ([#3572](https://github.com/mongodb/node-mongodb-native/issues/3572)) ([e544d88](https://github.com/mongodb/node-mongodb-native/commit/e544d880b1731fa59ad6a0d740b946e79478cfa6))
+
+### [5.0.1](https://github.com/mongodb/node-mongodb-native/compare/v5.0.0...v5.0.1) (2023-02-07)
+
+
+### Bug Fixes
+
+* **NODE-5027:** revert "ensure that MessageStream is destroyed when connections are destroyed" ([#3552](https://github.com/mongodb/node-mongodb-native/issues/3552)) ([2d178d0](https://github.com/mongodb/node-mongodb-native/commit/2d178d072ddc95740ccea35088312fa57cf6c0b2))
+
+## [5.0.0](https://github.com/mongodb/node-mongodb-native/compare/v5.0.0-alpha.0...v5.0.0) (2023-01-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **NODE-5016:** compile ts with target es2020 (#3545)
+
+### Features
+
+* **NODE-5016:** compile ts with target es2020 ([#3545](https://github.com/mongodb/node-mongodb-native/issues/3545)) ([def266a](https://github.com/mongodb/node-mongodb-native/commit/def266a63d3b6f4a2996e6e437fe8895a05666d8))
+
+
+### Bug Fixes
+
+* **NODE-4998:** use ipv4 in socks5 tests for node 18 ([#3538](https://github.com/mongodb/node-mongodb-native/issues/3538)) ([425dbe0](https://github.com/mongodb/node-mongodb-native/commit/425dbe05d7bd1ebc1f77303332b67181aa5ab135))
+
+## [5.0.0-alpha.0](https://github.com/mongodb/node-mongodb-native/compare/v4.13.0...v5.0.0-alpha.0) (2023-01-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **NODE-4522:** remove callback support (#3499)
+* **NODE-4817:** remove legacy logger (#3518)
+* **NODE-4867:** adopt BSON v5 (#3490)
+* **NODE-4738:** remove dot notation support by default (#3520)
+* **NODE-4950:** remove bson-ext import (#3523)
+* **NODE-4756:** ok 1 with write concern failure event changes (#3525)
+* **NODE-4034:** make internal bulk result private (#3515)
+* **NODE-4751:** drop support for client encryption < 2.3.0 (#3521)
+* **NODE-4684:** remove collection insert, update, remove methods (#3500)
+* **NODE-4924:** remove mapReduce collection helper (#3511)
+* **NODE-4925:** remove deprecated options and types (#3513)
+* **NODE-3818:** remove slaveOk options (#3503)
+* **NODE-3695:** remove lastop and optime from bulk result (#3504)
+* **NODE-3489:** remove cursor close options (#3505)
+* **NODE-4598:** close cursor on early loop break (#3502)
+* **NODE-3482:** remove unref (#3494)
+* **NODE-4521:** remove custom promise library support (#3498)
+* **NODE-4898:** aws credential providers now optional peerDependency (#3497)
+* **NODE-4436:** update minimum supported node version (#3496)
+* **NODE-4899:** support only snappy 7 or later (#3491)
+
+### Features
+
+* **NODE-3482:** remove unref ([#3494](https://github.com/mongodb/node-mongodb-native/issues/3494)) ([556812f](https://github.com/mongodb/node-mongodb-native/commit/556812f2d879fc6f5585b26f6af1db6f08a19b97))
+* **NODE-3489:** remove cursor close options ([#3505](https://github.com/mongodb/node-mongodb-native/issues/3505)) ([88c03a1](https://github.com/mongodb/node-mongodb-native/commit/88c03a127adb462047d3b5ecbcb3d390fa8f6c13))
+* **NODE-3695:** remove lastop and optime from bulk result ([#3504](https://github.com/mongodb/node-mongodb-native/issues/3504)) ([8900d40](https://github.com/mongodb/node-mongodb-native/commit/8900d40eaa0476ea672b5d01089229453cacca58))
+* **NODE-3818:** remove slaveOk options ([#3503](https://github.com/mongodb/node-mongodb-native/issues/3503)) ([2e28009](https://github.com/mongodb/node-mongodb-native/commit/2e28009892cca6db9564fba9822a321f7900f44b))
+* **NODE-4034:** make internal bulk result private ([#3515](https://github.com/mongodb/node-mongodb-native/issues/3515)) ([ebac1f5](https://github.com/mongodb/node-mongodb-native/commit/ebac1f50fafb4b3a229ac60d987d383ed1326803))
+* **NODE-4436:** update minimum supported node version ([#3496](https://github.com/mongodb/node-mongodb-native/issues/3496)) ([cca5362](https://github.com/mongodb/node-mongodb-native/commit/cca53621a00dcebc224908ce050b37862fda0f12))
+* **NODE-4509:** send 1 with hello commands ([#3508](https://github.com/mongodb/node-mongodb-native/issues/3508)) ([cc8ea1d](https://github.com/mongodb/node-mongodb-native/commit/cc8ea1dbf60b4a0484f4acdc107391d0449d70c8))
+* **NODE-4521:** remove custom promise library support ([#3498](https://github.com/mongodb/node-mongodb-native/issues/3498)) ([af36ebb](https://github.com/mongodb/node-mongodb-native/commit/af36ebbbe231722ed55b53d3dece5567e281587a))
+* **NODE-4522:** remove callback support ([#3499](https://github.com/mongodb/node-mongodb-native/issues/3499)) ([52853ff](https://github.com/mongodb/node-mongodb-native/commit/52853fff46ca01454f62b164ec3c7465c1fc0279))
+* **NODE-4598:** close cursor on early loop break ([#3502](https://github.com/mongodb/node-mongodb-native/issues/3502)) ([30c0aee](https://github.com/mongodb/node-mongodb-native/commit/30c0aeeb99f7ff21d990dcf0dfa9de677acb7905))
+* **NODE-4684:** remove collection insert, update, remove methods ([#3500](https://github.com/mongodb/node-mongodb-native/issues/3500)) ([14427d1](https://github.com/mongodb/node-mongodb-native/commit/14427d1b07518cbb3ca36dfbd24f02cd2e486835))
+* **NODE-4738:** remove dot notation support by default ([#3520](https://github.com/mongodb/node-mongodb-native/issues/3520)) ([26145df](https://github.com/mongodb/node-mongodb-native/commit/26145dfcca55f889e6f03a4e38f8af21039f8795))
+* **NODE-4751:** drop support for client encryption < 2.3.0 ([#3521](https://github.com/mongodb/node-mongodb-native/issues/3521)) ([3dae6da](https://github.com/mongodb/node-mongodb-native/commit/3dae6da24cba749597e1e8c378423c071847c5f6))
+* **NODE-4756:** ok 1 with write concern failure event changes ([#3525](https://github.com/mongodb/node-mongodb-native/issues/3525)) ([fee783c](https://github.com/mongodb/node-mongodb-native/commit/fee783cdafab02d8a022d08a9c3299e2da809d74))
+* **NODE-4767:** Change abstract cursor return type ([#3531](https://github.com/mongodb/node-mongodb-native/issues/3531)) ([410ef30](https://github.com/mongodb/node-mongodb-native/commit/410ef3030ec0de03b9f9888ad66ff66b6229e302))
+* **NODE-4817:** remove legacy logger ([#3518](https://github.com/mongodb/node-mongodb-native/issues/3518)) ([28c7cdd](https://github.com/mongodb/node-mongodb-native/commit/28c7cdd6a634f516092676e2e0e1e9272f8485cb))
+* **NODE-4867:** adopt BSON v5 ([#3490](https://github.com/mongodb/node-mongodb-native/issues/3490)) ([b850868](https://github.com/mongodb/node-mongodb-native/commit/b850868eb217c98e86b9657d199ac938b1f0a97a))
+* **NODE-4898:** aws credential providers now optional peerDependency ([#3497](https://github.com/mongodb/node-mongodb-native/issues/3497)) ([b9e4c7c](https://github.com/mongodb/node-mongodb-native/commit/b9e4c7c5f3f80a354090b92bd5162fc1c96e8e28))
+* **NODE-4899:** support only snappy 7 or later ([#3491](https://github.com/mongodb/node-mongodb-native/issues/3491)) ([21db1a9](https://github.com/mongodb/node-mongodb-native/commit/21db1a9e4af0fa29cf84a151a2b93447400c67f0))
+* **NODE-4924:** remove mapReduce collection helper ([#3511](https://github.com/mongodb/node-mongodb-native/issues/3511)) ([10d757a](https://github.com/mongodb/node-mongodb-native/commit/10d757a89e74b722d300450665f076aeae4970db))
+* **NODE-4925:** remove deprecated options and types ([#3513](https://github.com/mongodb/node-mongodb-native/issues/3513)) ([8f8ea45](https://github.com/mongodb/node-mongodb-native/commit/8f8ea453bd3c03e5a5fe357d32821a1d5735ebcf))
+* **NODE-4950:** remove bson-ext import ([#3523](https://github.com/mongodb/node-mongodb-native/issues/3523)) ([1470115](https://github.com/mongodb/node-mongodb-native/commit/147011599b0ad376116951e9058cfba3a67a06d0))
+
+## [4.13.0](https://github.com/mongodb/node-mongodb-native/compare/v4.12.1...v4.13.0) (2022-12-19)
+
+
+### Features
+
+* **NODE-4691:** interrupt in-flight operations on heartbeat failure ([#3457](https://github.com/mongodb/node-mongodb-native/issues/3457)) ([e641bd4](https://github.com/mongodb/node-mongodb-native/commit/e641bd44ef39d64b8b572e7a8ab6bfc71a2b4bed))
+* **NODE-4810:** define the new Logger ([#3475](https://github.com/mongodb/node-mongodb-native/issues/3475)) ([6ef11d7](https://github.com/mongodb/node-mongodb-native/commit/6ef11d70c07e2e223d376e7527354ddf758a163a))
+
+
+### Bug Fixes
+
+* **NODE-4447:** disable causal consistency in implicit sessions ([#3479](https://github.com/mongodb/node-mongodb-native/issues/3479)) ([6566fb5](https://github.com/mongodb/node-mongodb-native/commit/6566fb58400c956bb5e56bd7c8affe2ebf2ce558))
+* **NODE-4834:** ensure that MessageStream is destroyed when connections are destroyed ([#3482](https://github.com/mongodb/node-mongodb-native/issues/3482)) ([8338bae](https://github.com/mongodb/node-mongodb-native/commit/8338bae933c777dee4e7e49dbcf52c4fd7047528))
+
+### [4.12.1](https://github.com/mongodb/node-mongodb-native/compare/v4.12.0...v4.12.1) (2022-11-23)
+
+
+### Bug Fixes
+
+* **NODE-4830:** lazily import aws module ([#3476](https://github.com/mongodb/node-mongodb-native/issues/3476)) ([ff375e9](https://github.com/mongodb/node-mongodb-native/commit/ff375e9cfb84c85b7036a7ef0f87385d3ec126bb))
+* **NODE-4831:** check map value is not undefined ([#3477](https://github.com/mongodb/node-mongodb-native/issues/3477)) ([9795cdb](https://github.com/mongodb/node-mongodb-native/commit/9795cdb19f8e652b4dc4badd4fe8e6d1a7b837a6))
+
+## [4.12.0](https://github.com/mongodb/node-mongodb-native/compare/v4.11.0...v4.12.0) (2022-11-16)
+
+
+### Features
+
+* **NODE-4681:** deprecate modify result ([#3459](https://github.com/mongodb/node-mongodb-native/issues/3459)) ([6a8776c](https://github.com/mongodb/node-mongodb-native/commit/6a8776c32c8c63beb7871458413baadd9e126efa))
+* **NODE-4683:** make ChangeStream an async iterable ([#3454](https://github.com/mongodb/node-mongodb-native/issues/3454)) ([df8d9a4](https://github.com/mongodb/node-mongodb-native/commit/df8d9a4f2bb68f747ecb2b4d88a9137ca4f6ecb4))
+* **NODE-4733:** deprecate result and getLastOp ([#3458](https://github.com/mongodb/node-mongodb-native/issues/3458)) ([a143d3b](https://github.com/mongodb/node-mongodb-native/commit/a143d3bc6768076fe65368feac0726ca201d4bb0))
+* **NODE-4757:** deprecate unused PipeOptions ([#3466](https://github.com/mongodb/node-mongodb-native/issues/3466)) ([1a5e619](https://github.com/mongodb/node-mongodb-native/commit/1a5e619f13c3112d75f7b40d2e2cbde027de7f0b))
+* **NODE-4809:** deprecate the existing logger ([#3464](https://github.com/mongodb/node-mongodb-native/issues/3464)) ([1eea4f0](https://github.com/mongodb/node-mongodb-native/commit/1eea4f0f5821bb44c86f653d5a3a6c022a5cf55b))
+
+
+### Bug Fixes
+
+* **NODE-4609:** allow mapping to falsey non-null values in cursors ([#3452](https://github.com/mongodb/node-mongodb-native/issues/3452)) ([1bf6ef1](https://github.com/mongodb/node-mongodb-native/commit/1bf6ef1792deb108f3fc58429b165e9bdd06b4a7))
+* **NODE-4735:** fix change stream consecutive resumabilty ([#3453](https://github.com/mongodb/node-mongodb-native/issues/3453)) ([89b27e9](https://github.com/mongodb/node-mongodb-native/commit/89b27e93e5416fb74ec716f3dc541c104c3a90ce))
+* **NODE-4753:** remove erroneous deprecation of geoNear ([#3465](https://github.com/mongodb/node-mongodb-native/issues/3465)) ([199dcaf](https://github.com/mongodb/node-mongodb-native/commit/199dcaf7b462b1c488544cbdbaecaad0417c62d7))
+* **NODE-4783:** handle orphaned operation descriptions ([#3463](https://github.com/mongodb/node-mongodb-native/issues/3463)) ([4c9b4d8](https://github.com/mongodb/node-mongodb-native/commit/4c9b4d846e5ba6e86d0d0592ff8bf76654d0fa51))
+
+## [4.11.0](https://github.com/mongodb/node-mongodb-native/compare/v4.10.0...v4.11.0) (2022-10-19)
+
+
+### Features
+
+* **NODE-3255:** add minPoolSizeCheckIntervalMS option to connection pool ([#3429](https://github.com/mongodb/node-mongodb-native/issues/3429)) ([5f34ad0](https://github.com/mongodb/node-mongodb-native/commit/5f34ad07220bfbaf3b9fb6da2fdf67b78b92cb9e))
+* **NODE-3651:** add hashed index type ([#3432](https://github.com/mongodb/node-mongodb-native/issues/3432)) ([f6b56a1](https://github.com/mongodb/node-mongodb-native/commit/f6b56a17bfd707bb8f42c22af09915dc8b4e6e68))
+* **NODE-3875:** support recursive schema types ([#3433](https://github.com/mongodb/node-mongodb-native/issues/3433)) ([26bce4a](https://github.com/mongodb/node-mongodb-native/commit/26bce4a8debb65df5a42dc8599e886c9c83de10d))
+* **NODE-4503:** throw original error when server attaches NoWritesPerformed label ([#3441](https://github.com/mongodb/node-mongodb-native/issues/3441)) ([a7dab96](https://github.com/mongodb/node-mongodb-native/commit/a7dab96cf0a148bc411eb943d4433ba659451117))
+* **NODE-4650:** handle handshake errors with SDAM ([#3426](https://github.com/mongodb/node-mongodb-native/issues/3426)) ([cbe7533](https://github.com/mongodb/node-mongodb-native/commit/cbe75332d767a921551d71ea5725fac250906b00))
+* **NODE-4721:** add aws-sdk as optional dependency ([#3446](https://github.com/mongodb/node-mongodb-native/issues/3446)) ([b879cb5](https://github.com/mongodb/node-mongodb-native/commit/b879cb590e1c1880d12522aea2a3ac3a66e6031d))
+
+
+### Bug Fixes
+
+* **NODE-3712,NODE-4546:** electionId should be ordered before setVersion ([#3174](https://github.com/mongodb/node-mongodb-native/issues/3174)) ([ca51fec](https://github.com/mongodb/node-mongodb-native/commit/ca51feca25ab1413df7efe9e79b1de051ceb21eb))
+* **NODE-3921:** error on invalid TLS option combinations ([#3405](https://github.com/mongodb/node-mongodb-native/issues/3405)) ([1a550df](https://github.com/mongodb/node-mongodb-native/commit/1a550df3aa328f8c1790c0e02cd1cdd4731b88f8))
+* **NODE-4186:** accept ReadPreferenceLike in TransactionOptions type ([#3425](https://github.com/mongodb/node-mongodb-native/issues/3425)) ([dc62bcb](https://github.com/mongodb/node-mongodb-native/commit/dc62bcb158e52f4fbc6536f513bc2cab6d01640b))
+* **NODE-4475:** make interrupted message more specific ([#3437](https://github.com/mongodb/node-mongodb-native/issues/3437)) ([5f37cb6](https://github.com/mongodb/node-mongodb-native/commit/5f37cb6454878294ae004d13a5fcf62eef6adbbe))
+* **NODE-4608:** prevent parallel monitor checks ([#3404](https://github.com/mongodb/node-mongodb-native/issues/3404)) ([78bcfe4](https://github.com/mongodb/node-mongodb-native/commit/78bcfe4834d03d7f85bd0aaaf8ffc3a316be372d))
+* **NODE-4647:** improve error message ([#3409](https://github.com/mongodb/node-mongodb-native/issues/3409)) ([0d3c02e](https://github.com/mongodb/node-mongodb-native/commit/0d3c02e25f5327d3200d8631a5472309d93a6c8c))
+* **NODE-4649:** use SDAM handling for errors from min pool size population ([#3424](https://github.com/mongodb/node-mongodb-native/issues/3424)) ([ef3b55d](https://github.com/mongodb/node-mongodb-native/commit/ef3b55dd99eb52972e6cbebb4cb3d2ed2f72c081))
+
+## [4.10.0](https://github.com/mongodb/node-mongodb-native/compare/v4.9.0...v4.10.0) (2022-09-19)
+
+
+### Features
+
+* **NODE-4385:** add cmap pool pausing functionality ([#3321](https://github.com/mongodb/node-mongodb-native/issues/3321)) ([335ee55](https://github.com/mongodb/node-mongodb-native/commit/335ee55d04d4f7f5a6a0dfb06884dd318dc0fc2d))
+* **NODE-4484:** add experimental support for disambiguatedPaths in change stream documents ([#3365](https://github.com/mongodb/node-mongodb-native/issues/3365)) ([846365a](https://github.com/mongodb/node-mongodb-native/commit/846365a5ef58acb53480fbd5a7e0e83cbfed2a3e))
+* **NODE-4519:** deprecate promiseLibrary and PromiseProvider ([#3403](https://github.com/mongodb/node-mongodb-native/issues/3403)) ([5c322b6](https://github.com/mongodb/node-mongodb-native/commit/5c322b647fb878534f612329e1ac99daad6405d2))
+* **NODE-4547:** mark all callback APIs as deprecated ([#3388](https://github.com/mongodb/node-mongodb-native/issues/3388)) ([a983f14](https://github.com/mongodb/node-mongodb-native/commit/a983f147776e38a8c09a063120f64d5053619842))
+* **NODE-4607:** add exports needed by legacy client ([#3396](https://github.com/mongodb/node-mongodb-native/issues/3396)) ([972f760](https://github.com/mongodb/node-mongodb-native/commit/972f760947330d11895579acc63b509fcaac893c))
+* **NODE-4634:** add support for bulk FindOperators.hint() ([#3408](https://github.com/mongodb/node-mongodb-native/issues/3408)) ([8758890](https://github.com/mongodb/node-mongodb-native/commit/87588901c620f3cf350acf188726c45a4acf30c4))
+
+
+### Bug Fixes
+
+* **NODE-3144:** pool clear event ordering and retryability tests ([#3407](https://github.com/mongodb/node-mongodb-native/issues/3407)) ([bdc0d67](https://github.com/mongodb/node-mongodb-native/commit/bdc0d675598805f725806f95714cf33aacf3d2dc))
+* **NODE-3986:** unskip MONGODB-AWS test ([#3397](https://github.com/mongodb/node-mongodb-native/issues/3397)) ([5676f81](https://github.com/mongodb/node-mongodb-native/commit/5676f8116a7d07faf73f47b000a6fb2f462ab681))
+* **NODE-4557:** randomize servers when there are only 2 eligible servers ([#3390](https://github.com/mongodb/node-mongodb-native/issues/3390)) ([ddcfa49](https://github.com/mongodb/node-mongodb-native/commit/ddcfa49e753d0a674ad8a7b8e7c17a540d9734cc))
+* **NODE-4583:** revert nested union type support ([#3383](https://github.com/mongodb/node-mongodb-native/issues/3383)) ([7f94f0a](https://github.com/mongodb/node-mongodb-native/commit/7f94f0a19d48cc3e779216a5b4c51881ab8ddbf0))
+* **NODE-4591:** only set loadBalanced on handshake when explicitly set ([#3386](https://github.com/mongodb/node-mongodb-native/issues/3386)) ([57e9f2d](https://github.com/mongodb/node-mongodb-native/commit/57e9f2d9a617732f49c7e4dcfa3549912209584e))
+* **NODE-4621:** ipv6 address handling in HostAddress ([#3410](https://github.com/mongodb/node-mongodb-native/issues/3410)) ([5eb3978](https://github.com/mongodb/node-mongodb-native/commit/5eb3978a71941b88d877f2121910f9612d15e9e5))
+* **NODE-4639:** allow PromiseProvider to be null ([#3412](https://github.com/mongodb/node-mongodb-native/issues/3412)) ([d29b3d9](https://github.com/mongodb/node-mongodb-native/commit/d29b3d9db6824c048b75e6a74433d3638a41163f))
+
 ## [4.9.0](https://github.com/mongodb/node-mongodb-native/compare/v4.8.1...v4.9.0) (2022-08-18)
 
 

@@ -3,11 +3,14 @@ import ConnectionString from 'mongodb-connection-string-url';
 import * as qs from 'querystring';
 import * as url from 'url';
 
-import { AuthMechanism, WriteConcernSettings } from '../../../src';
-import { MongoClient } from '../../../src/mongo_client';
-import { TopologyType } from '../../../src/sdam/common';
-import { Topology } from '../../../src/sdam/topology';
-import { HostAddress } from '../../../src/utils';
+import {
+  AuthMechanism,
+  HostAddress,
+  MongoClient,
+  Topology,
+  TopologyType,
+  WriteConcernSettings
+} from '../../mongodb';
 import { getEnvironmentalOptions } from '../utils';
 
 interface ProxyParams {
@@ -58,7 +61,7 @@ export class TestConfiguration {
   buildInfo: Record<string, any>;
   options: {
     hosts?: string[];
-    hostAddresses?: HostAddress[];
+    hostAddresses: HostAddress[];
     hostAddress?: HostAddress;
     host?: string;
     port?: number;
@@ -69,6 +72,7 @@ export class TestConfiguration {
     auth?: { username: string; password: string; authSource?: string };
     proxyURIParams?: ProxyParams;
   };
+  serverApi: string;
 
   constructor(uri: string, context: Record<string, any>) {
     const url = new ConnectionString(uri);
@@ -82,6 +86,7 @@ export class TestConfiguration {
     this.isServerless = !!process.env.SERVERLESS;
     this.topologyType = this.isLoadBalanced ? TopologyType.LoadBalanced : context.topologyType;
     this.buildInfo = context.buildInfo;
+    this.serverApi = context.serverApi;
     this.options = {
       hosts,
       hostAddresses,
@@ -150,11 +155,7 @@ export class TestConfiguration {
   }
 
   newClient(dbOptions?: string | Record<string, any>, serverOptions?: Record<string, any>) {
-    serverOptions = Object.assign(
-      { minHeartbeatFrequencyMS: 100 },
-      getEnvironmentalOptions(),
-      serverOptions
-    );
+    serverOptions = Object.assign({}, getEnvironmentalOptions(), serverOptions);
 
     // support MongoClient constructor form (url, options) for `newClient`
     if (typeof dbOptions === 'string') {
@@ -201,10 +202,6 @@ export class TestConfiguration {
 
     if (this.topologyType === TopologyType.LoadBalanced && !this.isServerless) {
       dbOptions.loadBalanced = true;
-    }
-
-    if (process.env.MONGODB_API_VERSION) {
-      dbOptions.apiVersion = process.env.MONGODB_API_VERSION;
     }
 
     const urlOptions: url.UrlObject = {
@@ -364,7 +361,7 @@ export class TestConfiguration {
   }
 
   // Accessors and methods Client-Side Encryption
-  get mongodbClientEncryption() {
+  get mongodbClientEncryption(): typeof import('mongodb-client-encryption') {
     return this.clientSideEncryption && this.clientSideEncryption.mongodbClientEncryption;
   }
 

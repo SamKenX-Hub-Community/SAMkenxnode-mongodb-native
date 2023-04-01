@@ -5,25 +5,25 @@ import { expect } from 'chai';
 import {
   AbstractCursor,
   Collection,
+  CommandStartedEvent,
   Db,
   Document,
   GridFSFile,
   MongoClient,
   ObjectId,
+  ReadConcern,
+  ReadPreference,
+  SERVER_DESCRIPTION_CHANGED,
   ServerType,
   TopologyDescription,
-  TopologyType
-} from '../../../src';
-import { CommandStartedEvent } from '../../../src/cmap/command_monitoring_events';
-import { SERVER_DESCRIPTION_CHANGED } from '../../../src/constants';
-import { ReadConcern } from '../../../src/read_concern';
-import { ReadPreference } from '../../../src/read_preference';
-import { WriteConcern } from '../../../src/write_concern';
+  TopologyType,
+  WriteConcern
+} from '../../mongodb';
 import { getSymbolFrom, sleep } from '../../tools/utils';
 import { TestConfiguration } from '../runner/config';
 import { EntitiesMap, UnifiedChangeStream } from './entities';
 import { expectErrorCheck, resultCheck } from './match';
-import type { ExpectedEvent, OperationDescription } from './schema';
+import type { ExpectedEvent, ExpectedLogMessage, OperationDescription } from './schema';
 import { getMatchingEventCount, translateOptions } from './unified-utils';
 
 interface OperationFunctionParams {
@@ -292,6 +292,12 @@ operations.set('find', async ({ entities, operation }) => {
   const collection = entities.getEntity('collection', operation.object);
   const { filter, ...opts } = operation.arguments!;
   return collection.find(filter, opts).toArray();
+});
+
+operations.set('findOne', async ({ entities, operation }) => {
+  const collection = entities.getEntity('collection', operation.object);
+  const { filter, ...opts } = operation.arguments!;
+  return collection.findOne(filter, opts);
 });
 
 operations.set('findOneAndReplace', async ({ entities, operation }) => {
@@ -651,22 +657,7 @@ operations.set('rewrapManyDataKey', async ({ entities, operation }) => {
   const clientEncryption = entities.getEntity('clientEncryption', operation.object);
   const { filter, opts } = operation.arguments!;
 
-  const rewrapManyDataKeyResult = await clientEncryption.rewrapManyDataKey(filter, opts);
-
-  if (rewrapManyDataKeyResult.bulkWriteResult != null) {
-    // TODO(NODE-4393): refactor BulkWriteResult to not have a 'result' property
-    //
-    // The unified spec runner match function will assert that documents have no extra
-    // keys.  For `rewrapManyDataKey` operations, our unifed tests will fail because
-    // our BulkWriteResult class has an extra property - "result".  We explicitly make it
-    // non-enumerable for the purposes of testing so that the tests can pass.
-    const { bulkWriteResult } = rewrapManyDataKeyResult;
-    Object.defineProperty(bulkWriteResult, 'result', {
-      value: bulkWriteResult.result,
-      enumerable: false
-    });
-  }
-  return rewrapManyDataKeyResult;
+  return await clientEncryption.rewrapManyDataKey(filter, opts);
 });
 
 operations.set('deleteKey', async ({ entities, operation }) => {

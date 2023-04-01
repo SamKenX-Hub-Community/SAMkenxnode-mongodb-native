@@ -2,7 +2,7 @@
   "root": true,
   "parser": "@typescript-eslint/parser",
   "parserOptions": {
-    "ecmaVersion": 2019
+    "ecmaVersion": 2020
   },
   "plugins": [
     "simple-import-sort",
@@ -87,6 +87,7 @@
       "global"
     ],
     "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/require-await": "off",
     "no-restricted-imports": [
       "error",
       {
@@ -119,6 +120,12 @@
       {
         "selector": "BinaryExpression[operator=/[=!]==?/] Literal[value='undefined']",
         "message": "Do not strictly check typeof undefined (NOTE: currently this rule only detects the usage of 'undefined' string literal so this could be a misfire)"
+      }
+    ],
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_"
       }
     ]
   },
@@ -169,6 +176,7 @@
           {
             "patterns": [
               "**/../lib/**",
+              "**/../src/**",
               "mongodb-mock-server"
             ]
           }
@@ -191,7 +199,18 @@
       "rules": {
         "no-console": "off",
         "no-restricted-syntax": "off",
-        "typescript-eslint/ban-ts-comment": "off"
+        "typescript-eslint/ban-ts-comment": "off",
+        "no-restricted-imports": "off",
+        "@typescript-eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              "**/../lib/**",
+              "**/../src/**",
+              "mongodb-mock-server"
+            ]
+          }
+        ]
       }
     },
     {
@@ -201,7 +220,9 @@
       ],
       "parser": "@typescript-eslint/parser",
       "parserOptions": {
-        "project": ["./tsconfig.json"]
+        "project": [
+          "./tsconfig.json"
+        ]
       },
       "extends": [
         "plugin:@typescript-eslint/recommended-requiring-type-checking"
@@ -212,9 +233,23 @@
         "@typescript-eslint/no-unsafe-assignment": "off",
         "@typescript-eslint/no-unsafe-return": "off",
         "@typescript-eslint/no-unsafe-call": "off",
-
         "@typescript-eslint/restrict-plus-operands": "off",
-        "@typescript-eslint/restrict-template-expressions": "off"
+        "@typescript-eslint/restrict-template-expressions": "off",
+        "@typescript-eslint/require-await": "off",
+        "no-return-await": "off",
+        "@typescript-eslint/return-await": [
+          "error",
+          "in-try-catch"
+        ],
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              "**/../lib/**",
+              "mongodb-mock-server"
+            ]
+          }
+        ]
       }
     },
     {

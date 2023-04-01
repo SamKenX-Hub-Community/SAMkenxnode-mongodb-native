@@ -1,14 +1,7 @@
 import { expect } from 'chai';
-import * as sinon from 'sinon';
 
-import type {
-  Collection,
-  CommandStartedEvent,
-  CommandSucceededEvent,
-  MongoClient
-} from '../../../src';
-import { LEGACY_HELLO_COMMAND } from '../../../src/constants';
-import { MongoCompatibilityError, MongoServerError } from '../../../src/error';
+import type { CommandStartedEvent, CommandSucceededEvent, MongoClient } from '../../mongodb';
+import { LEGACY_HELLO_COMMAND, MongoServerError } from '../../mongodb';
 import type { TestConfiguration } from '../../tools/runner/config';
 import { setupDatabase } from '../shared';
 
@@ -381,121 +374,44 @@ describe('Sessions Spec', function () {
   });
 
   describe('Session allocation', () => {
-    let client;
+    let utilClient: MongoClient;
+    let client: MongoClient;
     let testCollection;
 
     beforeEach(async function () {
-      client = await this.configuration
+      utilClient = await this.configuration
         .newClient({ maxPoolSize: 1, monitorCommands: true })
         .connect();
       // reset test collection
-      testCollection = client.db('test').collection('too.many.sessions');
+      testCollection = utilClient.db('test').collection('too.many.sessions');
       await testCollection.drop().catch(() => null);
+      await utilClient.close();
+
+      // Fresh unused client for the test
+      client = await this.configuration.newClient({
+        maxPoolSize: 1,
+        monitorCommands: true
+      });
+      await client.connect(); // Parallel connect issue
+      testCollection = client.db('test').collection('too.many.sessions');
     });
 
     afterEach(async () => {
       await client?.close();
+      await utilClient?.close();
     });
 
-    it('should only use one session for many operations when maxPoolSize is 1', async () => {
+    it('should only use two sessions for many operations when maxPoolSize is 1', async () => {
       const documents = Array.from({ length: 50 }).map((_, idx) => ({ _id: idx }));
 
-      const events = [];
+      const events: CommandStartedEvent[] = [];
       client.on('commandStarted', ev => events.push(ev));
-      const allResults = await Promise.all(
-        documents.map(async doc => testCollection.insertOne(doc))
-      );
+      const allResults = await Promise.all(documents.map(doc => testCollection.insertOne(doc)));
 
       expect(allResults).to.have.lengthOf(documents.length);
       expect(events).to.have.lengthOf(documents.length);
 
-      expect(new Set(events.map(ev => ev.command.lsid.id.toString('hex'))).size).to.equal(1);
-    });
-  });
-
-  describe('session support detection', () => {
-    let client: MongoClient;
-    let collection: Collection<{ a: number }>;
-
-    beforeEach(async function () {
-      client = this.configuration.newClient({ monitorCommands: true });
-      await client.connect();
-      collection = client.db('test').collection('session.support.detection');
-      await collection.drop().catch(() => null);
-
-      // Never run a server selection for support since we're overriding it
-      sinon.stub(client.topology, 'shouldCheckForSessionSupport').callsFake(() => false);
-    });
-
-    afterEach(async function () {
-      await client.close();
-      sinon.restore();
-    });
-
-    context('when hasSessionSupport is false', () => {
-      beforeEach(() => sinon.stub(client.topology, 'hasSessionSupport').callsFake(() => false));
-
-      it('should not send session', async () => {
-        const events: CommandStartedEvent[] = [];
-        client.on('commandStarted', event => events.push(event));
-
-        await collection.insertMany([{ a: 1 }, { a: 1 }]);
-        const cursor = collection.find({ a: 1 }, { batchSize: 1, projection: { _id: 0 } });
-
-        const docs = [
-          await cursor.next(), // find
-          await cursor.next() // getMore
-        ];
-
-        await cursor.close();
-
-        expect(docs).to.deep.equal([{ a: 1 }, { a: 1 }]);
-        expect(events.map(({ commandName }) => commandName)).to.deep.equal([
-          'insert',
-          'find',
-          'getMore',
-          'killCursors'
-        ]);
-        for (const event of events) {
-          expect(event.command).to.not.have.property('lsid');
-        }
-      });
-
-      it('should fail for an explicit session', async () => {
-        const session = client.startSession();
-
-        const error = await collection
-          .insertMany([{ a: 1 }, { a: 1 }], { session })
-          .catch(error => error);
-
-        expect(error).to.be.instanceOf(MongoCompatibilityError);
-
-        await session.endSession();
-      });
-    });
-
-    context('when hasSessionSupport is true', () => {
-      beforeEach(() => sinon.stub(client.topology, 'hasSessionSupport').callsFake(() => true));
-
-      it('should send session', async () => {
-        const events: CommandStartedEvent[] = [];
-        client.on('commandStarted', event => events.push(event));
-
-        await collection.insertMany([{ a: 1 }, { a: 1 }]);
-        const cursor = collection.find({ a: 1 }, { batchSize: 1, projection: { _id: 0 } });
-
-        const docs = [await cursor.next(), await cursor.next()];
-
-        expect(docs).to.deep.equal([{ a: 1 }, { a: 1 }]);
-        expect(events.map(({ commandName }) => commandName)).to.deep.equal([
-          'insert',
-          'find',
-          'getMore'
-        ]);
-        for (const event of events) {
-          expect(event.command).to.have.property('lsid');
-        }
-      });
+      expect(new Set(events.map(ev => ev.command.lsid.id.toString('hex'))).size).to.equal(2);
     });
   });
 });

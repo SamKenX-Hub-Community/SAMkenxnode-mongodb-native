@@ -2,11 +2,7 @@ import { expect } from 'chai';
 import * as sinon from 'sinon';
 import { promisify } from 'util';
 
-import { FindOperation } from '../../../src/operations/find';
-import { Server } from '../../../src/sdam/server';
-import { ServerDescription } from '../../../src/sdam/server_description';
-import { Topology } from '../../../src/sdam/topology';
-import { ns } from '../../../src/utils';
+import { FindOperation, ns, Server, ServerDescription, Topology } from '../../mongodb';
 
 describe('FindOperation', function () {
   const namespace = ns('db.coll');
@@ -25,15 +21,15 @@ describe('FindOperation', function () {
     const operation = new FindOperation(undefined, namespace, filter, options);
 
     it('sets the namespace', function () {
-      expect(operation.ns).to.equal(namespace);
+      expect(operation.ns).to.deep.equal(namespace);
     });
 
     it('sets options', function () {
-      expect(operation.options).to.equal(options);
+      expect(operation.options).to.deep.equal(options);
     });
 
     it('sets filter', function () {
-      expect(operation.filter).to.equal(filter);
+      expect(operation.filter).to.deep.equal(filter);
     });
   });
 

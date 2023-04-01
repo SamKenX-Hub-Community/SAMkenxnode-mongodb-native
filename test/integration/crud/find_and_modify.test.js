@@ -4,90 +4,90 @@ const { format: f } = require('util');
 const { setupDatabase, assert: test } = require(`../shared`);
 const { expect } = require('chai');
 
+const { ObjectId, MongoServerError } = require('../../mongodb');
+
 describe('Find and Modify', function () {
   before(function () {
     return setupDatabase(this.configuration);
   });
 
-  context('promise tests', function () {
-    it('Should correctly execute findOneAndDelete operation With Promises and no options passed in', function (done) {
-      var configuration = this.configuration;
-      var client = configuration.newClient(configuration.writeConcernMax(), {
-        maxPoolSize: 1
-      });
-
-      client.connect().then(function (client) {
-        const db = client.db(configuration.db);
-        const col = db.collection('find_one_and_delete_with_promise_no_option');
-        col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
-          expect(r).property('insertedCount').to.equal(1);
-
-          col
-            .findOneAndDelete({ a: 1 })
-            .then(function (r) {
-              test.equal(1, r.lastErrorObject.n);
-              test.equal(1, r.value.b);
-
-              client.close(done);
-            })
-            .catch(function (err) {
-              test.ok(err != null);
-            });
-        });
-      });
+  it('Should correctly execute findOneAndDelete operation and no options passed in', function (done) {
+    var configuration = this.configuration;
+    var client = configuration.newClient(configuration.writeConcernMax(), {
+      maxPoolSize: 1
     });
 
-    it('Should correctly execute findOneAndUpate operation With Promises and no options passed in', function (done) {
-      var configuration = this.configuration;
-      var client = configuration.newClient(configuration.writeConcernMax(), {
-        maxPoolSize: 1
-      });
+    client.connect().then(function (client) {
+      const db = client.db(configuration.db);
+      const col = db.collection('find_one_and_delete_with_promise_no_option');
+      col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
+        expect(r).property('insertedCount').to.equal(1);
 
-      client.connect().then(function (client) {
-        const db = client.db(configuration.db);
-        const col = db.collection('find_one_and_update_with_promise_no_option');
-        col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
-          expect(r).property('insertedCount').to.equal(1);
+        col
+          .findOneAndDelete({ a: 1 })
+          .then(function (r) {
+            test.equal(1, r.lastErrorObject.n);
+            test.equal(1, r.value.b);
 
-          col
-            .findOneAndUpdate({ a: 1 }, { $set: { a: 1 } })
-            .then(function (r) {
-              test.equal(1, r.lastErrorObject.n);
-              test.equal(1, r.value.b);
-
-              client.close(done);
-            })
-            .catch(function (err) {
-              test.ok(err != null);
-            });
-        });
+            client.close(done);
+          })
+          .catch(function (err) {
+            test.ok(err != null);
+          });
       });
     });
+  });
 
-    it('Should correctly execute findOneAndReplace operation With Promises and no options passed in', function (done) {
-      var configuration = this.configuration;
-      var client = configuration.newClient(configuration.writeConcernMax(), {
-        maxPoolSize: 1
+  it('Should correctly execute findOneAndUpate operation and no options passed in', function (done) {
+    var configuration = this.configuration;
+    var client = configuration.newClient(configuration.writeConcernMax(), {
+      maxPoolSize: 1
+    });
+
+    client.connect().then(function (client) {
+      const db = client.db(configuration.db);
+      const col = db.collection('find_one_and_update_with_promise_no_option');
+      col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
+        expect(r).property('insertedCount').to.equal(1);
+
+        col
+          .findOneAndUpdate({ a: 1 }, { $set: { a: 1 } })
+          .then(function (r) {
+            test.equal(1, r.lastErrorObject.n);
+            test.equal(1, r.value.b);
+
+            client.close(done);
+          })
+          .catch(function (err) {
+            test.ok(err != null);
+          });
       });
+    });
+  });
 
-      client.connect().then(function (client) {
-        const db = client.db(configuration.db);
-        const col = db.collection('find_one_and_replace_with_promise_no_option');
-        col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
-          expect(r).property('insertedCount').to.equal(1);
+  it('Should correctly execute findOneAndReplace operation and no options passed in', function (done) {
+    var configuration = this.configuration;
+    var client = configuration.newClient(configuration.writeConcernMax(), {
+      maxPoolSize: 1
+    });
 
-          col
-            .findOneAndReplace({ a: 1 }, { a: 1 })
-            .then(function (r) {
-              test.equal(1, r.lastErrorObject.n);
-              test.equal(1, r.value.b);
+    client.connect().then(function (client) {
+      const db = client.db(configuration.db);
+      const col = db.collection('find_one_and_replace_with_promise_no_option');
+      col.insertMany([{ a: 1, b: 1 }], { writeConcern: { w: 1 } }).then(function (r) {
+        expect(r).property('insertedCount').to.equal(1);
 
-              client.close(done);
-            })
-            .catch(function (err) {
-              test.ok(err != null);
-            });
-        });
+        col
+          .findOneAndReplace({ a: 1 }, { a: 1 })
+          .then(function (r) {
+            test.equal(1, r.lastErrorObject.n);
+            test.equal(1, r.value.b);
+
+            client.close(done);
+          })
+          .catch(function (err) {
+            test.ok(err != null);
+          });
       });
     });
   });
@@ -310,16 +310,67 @@ describe('Find and Modify', function () {
     }
   });
 
-  it('should not allow atomic operators for findOneAndReplace', {
-    metadata: { requires: { topology: 'single' } },
-    test: async function () {
-      const client = this.configuration.newClient();
-      const db = client.db('fakeDb');
-      const collection = db.collection('test');
-      expect(() => {
-        collection.findOneAndReplace({ a: 1 }, { $set: { a: 14 } });
-      }).to.throw(/must not contain atomic operators/);
+  it('should not allow atomic operators for findOneAndReplace', async function () {
+    const client = this.configuration.newClient();
+    const db = client.db('fakeDb');
+    const collection = db.collection('test');
+    const error = await collection
+      .findOneAndReplace({ a: 1 }, { $set: { a: 14 } })
+      .catch(error => error);
+    expect(error.message).to.match(/must not contain atomic operators/);
+    await client.close();
+  });
+
+  context('when passed an ObjectId instance as the filter', () => {
+    let client;
+    let findAndModifyStarted;
+
+    beforeEach(function () {
+      client = this.configuration.newClient({ monitorCommands: true });
+      findAndModifyStarted = [];
+      client.on('commandStarted', ev => {
+        if (ev.commandName === 'findAndModify') findAndModifyStarted.push(ev.command);
+      });
+    });
+
+    afterEach(async function () {
+      findAndModifyStarted = undefined;
       await client.close();
-    }
+    });
+
+    context('findOneAndDelete(oid)', () => {
+      it('sets the query to be the ObjectId instance', async () => {
+        const collection = client.db('test').collection('test');
+        const oid = new ObjectId();
+        const error = await collection.findOneAndDelete(oid).catch(error => error);
+        expect(error).to.be.instanceOf(MongoServerError);
+        expect(findAndModifyStarted).to.have.lengthOf(1);
+        expect(findAndModifyStarted[0]).to.have.property('query', oid);
+      });
+    });
+
+    context('findOneAndReplace(oid)', () => {
+      it('sets the query to be the ObjectId instance', async () => {
+        const collection = client.db('test').collection('test');
+        const oid = new ObjectId();
+        const error = await collection.findOneAndReplace(oid, {}).catch(error => error);
+        expect(error).to.be.instanceOf(MongoServerError);
+        expect(findAndModifyStarted).to.have.lengthOf(1);
+        expect(findAndModifyStarted[0]).to.have.property('query', oid);
+      });
+    });
+
+    context('findOneAndUpdate(oid)', () => {
+      it('sets the query to be the ObjectId instance', async () => {
+        const collection = client.db('test').collection('test');
+        const oid = new ObjectId();
+        const error = await collection
+          .findOneAndUpdate(oid, { $set: { a: 1 } })
+          .catch(error => error);
+        expect(error).to.be.instanceOf(MongoServerError);
+        expect(findAndModifyStarted).to.have.lengthOf(1);
+        expect(findAndModifyStarted[0]).to.have.property('query', oid);
+      });
+    });
   });
 });

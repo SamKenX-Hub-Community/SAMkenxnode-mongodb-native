@@ -6,11 +6,13 @@ require('source-map-support').install({
 
 const path = require('path');
 const fs = require('fs');
-const { MongoClient } = require('../../../../src');
+const { MongoClient } = require('../../../mongodb');
 const { TestConfiguration } = require('../config');
 const { getEnvironmentalOptions } = require('../../utils');
 const mock = require('../../mongodb-mock/index');
 const { inspect } = require('util');
+const { setDefaultResultOrder } = require('dns');
+const { coerce, gte } = require('semver');
 
 // Default our tests to have auth enabled
 // A better solution will be tackled in NODE-3714
@@ -98,8 +100,19 @@ const skipBrokenAuthTestBeforeEachHook = function ({ skippedTests } = { skippedT
 };
 
 const testConfigBeforeHook = async function () {
+  // TODO(NODE-5035): Implement OIDC support. Creating the MongoClient will fail
+  // with "MongoInvalidArgumentError: AuthMechanism 'MONGODB-OIDC' not supported"
+  // as is expected until that ticket goes in. Then this condition gets removed.
+  if (MONGODB_URI && MONGODB_URI.includes('MONGODB-OIDC')) {
+    this.configuration = new TestConfiguration(MONGODB_URI, {});
+    return;
+  }
+
   const client = new MongoClient(loadBalanced ? SINGLE_MONGOS_LB_URI : MONGODB_URI, {
-    ...getEnvironmentalOptions()
+    ...getEnvironmentalOptions(),
+    // TODO(NODE-4884): once happy eyeballs support is added, we no longer need to set
+    // the default dns resolution order for CI
+    family: 4
   });
 
   await client.db('test').command({ ping: 1 });
@@ -166,11 +179,34 @@ const beforeAllPluginImports = () => {
   require('mocha-sinon');
 };
 
+/**
+ * @remarks TODO(NODE-4884): once happy eyeballs support is added, we no longer need to set
+ * the default dns resolution order for CI
+ */
+function installNodeDNSWorkaroundHooks() {
+  if (gte(coerce(process.version), coerce('18'))) {
+    // We set before hooks because some tests connect in before hooks
+    before(() => {
+      setDefaultResultOrder('ipv4first');
+    });
+
+    // We set beforeEach hooks to make this resilient to test ordering and
+    // ensure each affected test has the correct ip address resolution setting
+    beforeEach(() => {
+      setDefaultResultOrder('ipv4first');
+    });
+    afterEach(() => {
+      setDefaultResultOrder('verbatim');
+    });
+  }
+}
+
 module.exports = {
   mochaHooks: {
     beforeAll: [beforeAllPluginImports, testConfigBeforeHook],
     beforeEach: [testSkipBeforeEachHook],
     afterAll: [cleanUpMocksAfterHook]
   },
-  skipBrokenAuthTestBeforeEachHook
+  skipBrokenAuthTestBeforeEachHook,
+  installNodeDNSWorkaroundHooks
 };

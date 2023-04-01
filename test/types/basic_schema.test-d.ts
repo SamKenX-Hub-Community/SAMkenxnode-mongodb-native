@@ -1,10 +1,7 @@
 import { expectAssignable, expectNotAssignable, expectNotType, expectType } from 'tsd';
 
-import { ObjectId } from '../../src/bson';
-import { Collection } from '../../src/collection';
-import { Db } from '../../src/db';
-import { MongoClient } from '../../src/mongo_client';
-import type { InferIdType } from '../../src/mongo_types';
+import type { InferIdType } from '../mongodb';
+import { Collection, Db, Document, MongoClient, ObjectId } from '../mongodb';
 
 const db = new Db(new MongoClient(''), '');
 
@@ -20,7 +17,7 @@ expectType<Collection<ACounterWithId>>(new Collection<ACounterWithId>(db, ''));
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Simple Schema that does not define an _id
 // With _id
-type InsertOneArgOf<S> = Parameters<Collection<S>['insertOne']>[0];
+type InsertOneArgOf<S extends Document> = Parameters<Collection<S>['insertOne']>[0];
 expectAssignable<InsertOneArgOf<ACounter>>({ _id: new ObjectId(), a: 3 });
 // Without _id
 expectAssignable<InsertOneArgOf<ACounter>>({ a: 3 });

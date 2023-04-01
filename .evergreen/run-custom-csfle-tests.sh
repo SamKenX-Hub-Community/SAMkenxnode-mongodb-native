@@ -12,7 +12,7 @@ export CSFLE_KMS_PROVIDERS=${CSFLE_KMS_PROVIDERS}
 export CRYPT_SHARED_LIB_PATH=${CRYPT_SHARED_LIB_PATH}
 echo "csfle CRYPT_SHARED_LIB_PATH: $CRYPT_SHARED_LIB_PATH"
 
-[ -s "$PROJECT_DIRECTORY/node-artifacts/nvm/nvm.sh" ] && source "$PROJECT_DIRECTORY"/node-artifacts/nvm/nvm.sh
+source "${PROJECT_DIRECTORY}/.evergreen/init-nvm.sh"
 
 set -o xtrace   # Write all commands first to stderr
 set -o errexit  # Exit the script with error if any of the commands fail
@@ -53,7 +53,6 @@ popd # mongo-c-driver
 pushd libmongocrypt/bindings/node
 
 npm install --production --ignore-scripts
-source ./.evergreen/find_cmake.sh
 bash ./etc/build-static.sh
 
 popd # libmongocrypt/bindings/node

@@ -2,8 +2,8 @@
 const { Timestamp } = require('bson');
 const { expect } = require('chai');
 const mock = require('../../tools/mongodb-mock/index');
-const { isHello } = require('../../../src/utils');
-const { MongoClient } = require('../../../src');
+const { isHello } = require('../../mongodb');
+const { MongoClient } = require('../../mongodb');
 
 const test = {};
 describe('Sessions - unit/sessions', function () {
@@ -33,21 +33,19 @@ describe('Sessions - unit/sessions', function () {
       });
 
       const client = new MongoClient(`mongodb://${test.server.uri()}/test`);
-      return client.connect().then(client => {
-        const session = client.startSession({ causalConsistency: true });
-        const coll = client.db('foo').collection('bar');
+      const session = client.startSession({ causalConsistency: true });
+      const coll = client.db('foo').collection('bar');
 
-        return coll
-          .insert({ a: 42 }, { session: session })
-          .then(() => coll.findOne({}, { session: session, readConcern: { level: 'majority' } }))
-          .then(() => {
-            expect(findCommand.readConcern).to.have.keys(['level', 'afterClusterTime']);
-            expect(findCommand.readConcern.afterClusterTime).to.eql(insertOperationTime);
+      return coll
+        .insertOne({ a: 42 }, { session: session })
+        .then(() => coll.findOne({}, { session: session, readConcern: { level: 'majority' } }))
+        .then(() => {
+          expect(findCommand.readConcern).to.have.keys(['level', 'afterClusterTime']);
+          expect(findCommand.readConcern.afterClusterTime).to.eql(insertOperationTime);
 
-            session.endSession({ skipCommand: true });
-            return client.close();
-          });
-      });
+          session.endSession({ skipCommand: true });
+          return client.close();
+        });
     });
 
     it('does not mutate command options', function () {

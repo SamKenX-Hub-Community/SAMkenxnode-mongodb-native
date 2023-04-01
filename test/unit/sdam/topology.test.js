@@ -1,21 +1,20 @@
 'use strict';
 
-const { clearTimeout, setTimeout } = require('timers');
+const { clearTimeout } = require('timers');
 const mock = require('../../tools/mongodb-mock/index');
 const { expect } = require('chai');
 const sinon = require('sinon');
 const net = require('net');
-const { MongoClient, MongoServerSelectionError, ReadPreference } = require('../../../src');
-const { Topology } = require('../../../src/sdam/topology');
-const { Server } = require('../../../src/sdam/server');
-const { ServerDescription } = require('../../../src/sdam/server_description');
-const { ns, makeClientMetadata, isHello } = require('../../../src/utils');
-const { TopologyDescriptionChangedEvent } = require('../../../src/sdam/events');
-const { TopologyDescription } = require('../../../src/sdam/topology_description');
-const { TopologyType } = require('../../../src/sdam/common');
-const { SrvPoller, SrvPollingEvent } = require('../../../src/sdam/srv_polling');
+const { MongoClient, MongoServerSelectionError, ReadPreference } = require('../../mongodb');
+const { Topology } = require('../../mongodb');
+const { Server } = require('../../mongodb');
+const { ns, makeClientMetadata, isHello } = require('../../mongodb');
+const { TopologyDescriptionChangedEvent } = require('../../mongodb');
+const { TopologyDescription } = require('../../mongodb');
+const { TopologyType } = require('../../mongodb');
+const { SrvPoller, SrvPollingEvent } = require('../../mongodb');
 const { getSymbolFrom } = require('../../tools/utils');
-const { LEGACY_NOT_WRITABLE_PRIMARY_ERROR_MESSAGE } = require('../../../src/error');
+const { LEGACY_NOT_WRITABLE_PRIMARY_ERROR_MESSAGE } = require('../../mongodb');
 
 describe('Topology (unit)', function () {
   let client, topology;
@@ -26,7 +25,7 @@ describe('Topology (unit)', function () {
     }
 
     if (topology) {
-      topology.close();
+      topology.close({});
     }
   });
 
@@ -38,7 +37,8 @@ describe('Topology (unit)', function () {
     it('should correctly pass appname', function (done) {
       const server = new Topology([`localhost:27017`], {
         metadata: makeClientMetadata({
-          appName: 'My application name'
+          appName: 'My application name',
+          driverInfo: {}
         })
       });
 
@@ -46,7 +46,7 @@ describe('Topology (unit)', function () {
       done();
     });
 
-    it('should report the correct platform in client metadata', function (done) {
+    it('should report the correct platform in client metadata', async function () {
       const helloRequests = [];
       mockServer.setMessageHandler(request => {
         const doc = request.document;
@@ -59,96 +59,17 @@ describe('Topology (unit)', function () {
       });
 
       client = new MongoClient(`mongodb://${mockServer.uri()}/`);
-      client.connect(err => {
-        expect(err).to.not.exist;
 
-        client.db().command({ ping: 1 }, err => {
-          expect(err).to.not.exist;
+      await client.connect();
 
-          expect(helloRequests).to.have.length.greaterThan(1);
-          helloRequests.forEach(helloRequest =>
-            expect(helloRequest)
-              .nested.property('client.platform')
-              .to.match(/unified/)
-          );
+      await client.db().command({ ping: 1 });
 
-          done();
-        });
-      });
-    });
-  });
-
-  describe('shouldCheckForSessionSupport', function () {
-    beforeEach(function () {
-      this.sinon = sinon.createSandbox();
-
-      // these are mocks we want across all tests
-      this.sinon.stub(Server.prototype, 'requestCheck');
-      this.sinon
-        .stub(Topology.prototype, 'selectServer')
-        .callsFake(function (selector, options, callback) {
-          setTimeout(() => {
-            const server = Array.from(this.s.servers.values())[0];
-            callback(null, server);
-          }, 50);
-        });
-    });
-
-    afterEach(function () {
-      this.sinon.restore();
-    });
-
-    it('should check for sessions if connected to a single server and has no known servers', function (done) {
-      const topology = new Topology('someserver:27019');
-      this.sinon.stub(Server.prototype, 'connect').callsFake(function () {
-        this.s.state = 'connected';
-        this.emit('connect');
-      });
-
-      topology.connect(() => {
-        expect(topology.shouldCheckForSessionSupport()).to.be.true;
-        topology.close(done);
-      });
-    });
-
-    it('should not check for sessions if connected to a single server', function (done) {
-      const topology = new Topology('someserver:27019');
-      this.sinon.stub(Server.prototype, 'connect').callsFake(function () {
-        this.s.state = 'connected';
-        this.emit('connect');
-
-        setTimeout(() => {
-          this.emit(
-            'descriptionReceived',
-            new ServerDescription('someserver:27019', { ok: 1, maxWireVersion: 6 })
-          );
-        }, 20);
-      });
-
-      topology.connect(() => {
-        expect(topology.shouldCheckForSessionSupport()).to.be.false;
-        topology.close(done);
-      });
-    });
-
-    it('should check for sessions if there are no data-bearing nodes', function (done) {
-      const topology = new Topology(['mongos:27019', 'mongos:27018', 'mongos:27017'], {});
-      this.sinon.stub(Server.prototype, 'connect').callsFake(function () {
-        this.s.state = 'connected';
-        this.emit('connect');
-
-        setTimeout(() => {
-          this.emit(
-            'descriptionReceived',
-            new ServerDescription(this.name, { ok: 1, msg: 'isdbgrid', maxWireVersion: 6 })
-          );
-        }, 20);
-      });
-
-      topology.connect(() => {
-        expect(topology.shouldCheckForSessionSupport()).to.be.false;
-        topology.close(done);
-      });
+      expect(helloRequests).to.have.length.greaterThan(1);
+      for (const request of helloRequests) {
+        expect(request)
+          .nested.property('client.platform')
+          .to.match(/Node.js /);
+      }
     });
   });
 
@@ -182,7 +103,7 @@ describe('Topology (unit)', function () {
             expect(err).to.exist;
             expect(err).to.match(/timed out/);
 
-            topology.close(done);
+            topology.close({}, done);
           });
         });
       });
@@ -325,7 +246,7 @@ describe('Topology (unit)', function () {
             expect(err).to.exist;
             expect(err).to.eql(serverDescription.error);
             expect(poolCleared).to.be.false;
-            topology.close(done);
+            topology.close({}, done);
           });
         });
       });
@@ -467,7 +388,7 @@ describe('Topology (unit)', function () {
 
         it('should clean up listeners on close', function (done) {
           topology.s.state = 'connected'; // fake state to test clean up logic
-          topology.close(e => {
+          topology.close({}, e => {
             const srvPollerListeners = topology.s.srvPoller.listeners(
               SrvPoller.SRV_RECORD_DISCOVERY
             );
@@ -547,7 +468,7 @@ describe('Topology (unit)', function () {
           // occurs `requestCheck` will be called for an immediate check.
           expect(requestCheck).property('callCount').to.equal(1);
 
-          topology.close(done);
+          topology.close({}, done);
         });
       });
     });
@@ -559,7 +480,7 @@ describe('Topology (unit)', function () {
         this.emit('connect');
       });
 
-      topology.close(() => {
+      topology.close({}, () => {
         topology.selectServer(ReadPreference.primary, { serverSelectionTimeoutMS: 2000 }, err => {
           expect(err).to.exist;
           expect(err).to.match(/Topology is closed/);

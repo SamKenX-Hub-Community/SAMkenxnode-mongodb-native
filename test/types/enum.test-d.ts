@@ -10,7 +10,6 @@ import {
   CursorFlag,
   ExplainVerbosity,
   GSSAPICanonicalizationValue,
-  LoggerLevel,
   MongoErrorLabel,
   ProfilingLevel,
   ReadConcernLevel,
@@ -19,7 +18,7 @@ import {
   ServerApiVersion,
   ServerType,
   TopologyType
-} from '../../src/index';
+} from '../mongodb';
 
 const num: number = Math.random();
 
@@ -37,7 +36,6 @@ expectType<BatchType>(Object.values(BatchType)[num]);
 expectType<BSONType>(Object.values(BSONType)[num]);
 expectType<Compressor>(Object.values(Compressor)[num]);
 expectType<GSSAPICanonicalizationValue>(Object.values(GSSAPICanonicalizationValue)[num]);
-expectType<LoggerLevel>(Object.values(LoggerLevel)[num]);
 expectType<ProfilingLevel>(Object.values(ProfilingLevel)[num]);
 expectType<ReadConcernLevel>(Object.values(ReadConcernLevel)[num]);
 expectType<ReadPreferenceMode>(Object.values(ReadPreferenceMode)[num]);

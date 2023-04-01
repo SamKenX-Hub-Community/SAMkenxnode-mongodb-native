@@ -1,113 +1,108 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -o errexit  # Exit the script with error if any of the commands fail
 
-NVM_WINDOWS_URL="https://github.com/coreybutler/nvm-windows/releases/download/1.1.9/nvm-noinstall.zip"
-NVM_URL="https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh"
+NODE_LTS_NAME=${NODE_LTS_NAME:-fermium}
+NODE_ARTIFACTS_PATH="${PROJECT_DIRECTORY:-$(pwd)}/node-artifacts"
+if [[ "$OS" = "Windows_NT" ]]; then NODE_ARTIFACTS_PATH=$(cygpath --unix "$NODE_ARTIFACTS_PATH"); fi
 
-NODE_LTS_NAME=${NODE_LTS_NAME:-erbium}
-MSVS_VERSION=${MSVS_VERSION:-2019}
-NODE_ARTIFACTS_PATH="${PROJECT_DIRECTORY}/node-artifacts"
-NPM_CACHE_DIR="${NODE_ARTIFACTS_PATH}/npm"
-NPM_TMP_DIR="${NODE_ARTIFACTS_PATH}/tmp"
+CURL_FLAGS=(
+  --fail          # Exit code 1 if request fails
+  --compressed    # Request a compressed response should keep fetching fast
+  --location      # Follow a redirect
+  --retry 8       # Retry HTTP 408, 429, 500, 502, 503 or 504, 8 times
+  --silent        # Do not print a progress bar
+  --show-error    # Despite the silent flag still print out errors
+  --max-time 900  # 900 seconds is 15 minutes, evergreen times out at 20
+  --continue-at - # If a download is interrupted it can figure out where to resume
+)
 
-# this needs to be explicitly exported for the nvm install below
-export NVM_DIR="${NODE_ARTIFACTS_PATH}/nvm"
-export XDG_CONFIG_HOME=${NODE_ARTIFACTS_PATH}
+mkdir -p "$NODE_ARTIFACTS_PATH/npm_global"
 
-# create node artifacts path if needed
-mkdir -p ${NODE_ARTIFACTS_PATH}
-mkdir -p ${NPM_CACHE_DIR}
-mkdir -p "${NPM_TMP_DIR}"
+# Comparisons are all case insensitive
+shopt -s nocasematch
 
-case $NODE_LTS_NAME in
-  "argon")
-    VERSION=4
-    ;;
-  "boron")
-    VERSION=6
-    ;;
-  "carbon")
-    VERSION=8
-    ;;
-  "dubnium")
-    VERSION=10
-    ;;
-  "erbium")
-    VERSION=12
-    ;;
-  "fermium")
-    VERSION=14
-    ;;
-  "gallium")
-    VERSION=16
-    ;;
-  "hydrogen")
-    VERSION=18
-    ;;
-  "iron")
-    VERSION=20
-    ;;
-  *)
-    echo "Unsupported Node LTS version $1"
-    exit 1
-    ;;
-esac
+# index.tab is a sorted tab separated values file with the following headers
+# 0       1    2     3   4  5  6    7       8       9   10
+# version date files npm v8 uv zlib openssl modules lts security
+curl "${CURL_FLAGS[@]}" "https://nodejs.org/dist/index.tab" --output node_index.tab
 
-NODE_VERSION=$(curl --retry 8 --retry-delay 5  --max-time 50 --silent -o- https://nodejs.org/download/release/latest-v${VERSION}.x/SHASUMS256.txt | head -n 1 | awk '{print $2};' | cut -d- -f2)
-export NODE_VERSION=${NODE_VERSION:1} # :1 gets rid of the leading 'v'
+while IFS=$'\t' read -r -a row; do
+  node_index_version="${row[0]}"
+  node_index_date="${row[1]}"
+  node_index_lts="${row[9]}"
+  [[ "$node_index_version" = "version" ]] && continue # skip tsv header
+  [[ "$NODE_LTS_NAME" = "latest" ]] && break # first line is latest
+  [[ "$NODE_LTS_NAME" = "$node_index_lts" ]] && break # case insensitive compare
+done < node_index.tab
 
-# output node version to expansions file for use in subsequent scripts
-cat <<EOT > deps-expansion.yml
-  NODE_VERSION: "$NODE_VERSION"
-EOT
-
-# install Node.js on Windows
-if [[ "$OS" == "Windows_NT" ]]; then
-  # Delete pre-existing node to avoid version conflicts
-  rm -rf "/cygdrive/c/Program Files/nodejs"
-
-
-  NVM_HOME=$(cygpath -w "$NVM_DIR")
-  export NVM_HOME
-  NVM_SYMLINK=$(cygpath -w "$NODE_ARTIFACTS_PATH/bin")
-  export NVM_SYMLINK
-  NVM_ARTIFACTS_PATH=$(cygpath -w "$NODE_ARTIFACTS_PATH/bin")
-  export NVM_ARTIFACTS_PATH
-  PATH=$(cygpath $NVM_SYMLINK):$(cygpath $NVM_HOME):$PATH
-  export PATH
-
-  curl -L $NVM_WINDOWS_URL -o nvm.zip
-  unzip -d "$NVM_DIR" nvm.zip
-  rm nvm.zip
-
-  chmod 777 "$NVM_DIR"
-  chmod -R a+rx "$NVM_DIR"
-
-  cat <<EOT > "$NVM_DIR/settings.txt"
-root: $NVM_HOME
-path: $NVM_SYMLINK
-EOT
-  nvm install "$NODE_VERSION"
-  nvm use "$NODE_VERSION"
-  which node || echo "node not found, PATH=$PATH"
-  which npm || echo "npm not found, PATH=$PATH"
-  npm cache clear --force # Fixes: Cannot read properties of null (reading 'pickAlgorithm') error on windows
-  npm config set msvs_version ${MSVS_VERSION}
-  npm config set scripts-prepend-node-path true
-
-# install Node.js on Linux/MacOS
+if [[ "$OS" = "Windows_NT" ]]; then
+  operating_system="win"
+elif [[ $(uname) = "darwin" ]]; then
+  operating_system="darwin"
+elif [[ $(uname) = "linux" ]]; then
+  operating_system="linux"
 else
-  curl -o- $NVM_URL | bash
-  [ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh"
-  nvm install --no-progress "$NODE_VERSION"
-
-  # setup npm cache in a local directory
-  cat <<EOT > .npmrc
-devdir=${NPM_CACHE_DIR}/.node-gyp
-init-module=${NPM_CACHE_DIR}/.npm-init.js
-cache=${NPM_CACHE_DIR}
-tmp=${NPM_TMP_DIR}
-EOT
+  echo "Unable to determine operating system: $operating_system"
+  exit 1
 fi
 
-npm install
+architecture=$(uname -m)
+if [[ $architecture = "x86_64" ]]; then
+  architecture="x64"
+elif [[ $architecture = "arm64" ]]; then
+  architecture="arm64"
+elif [[ $architecture = "aarch64" ]]; then
+  architecture="arm64"
+elif [[ $architecture == s390* ]]; then
+  architecture="s390x"
+elif [[ $architecture == ppc* ]]; then
+  architecture="ppc64le"
+else
+  echo "Unable to determine operating system: $architecture"
+  exit 1
+fi
+
+file_extension="tar.gz"
+if [[ "$OS" = "Windows_NT" ]]; then file_extension="zip"; fi
+
+node_directory="node-${node_index_version}-${operating_system}-${architecture}"
+node_archive="${node_directory}.${file_extension}"
+node_archive_path="$NODE_ARTIFACTS_PATH/${node_archive}"
+node_download_url="https://nodejs.org/dist/${node_index_version}/${node_archive}"
+
+echo "Node.js ${node_index_version} for ${operating_system}-${architecture} released on ${node_index_date}"
+
+set -o xtrace
+
+curl "${CURL_FLAGS[@]}" "${node_download_url}" --output "$node_archive_path"
+
+if [[ "$file_extension" = "zip" ]]; then
+  unzip -q "$node_archive_path" -d "${NODE_ARTIFACTS_PATH}"
+  mkdir -p "${NODE_ARTIFACTS_PATH}/nodejs"
+  # Windows "bins" are at the top level
+  mv "${NODE_ARTIFACTS_PATH}/${node_directory}" "${NODE_ARTIFACTS_PATH}/nodejs/bin"
+  # Need to add executable flag ourselves
+  chmod +x "${NODE_ARTIFACTS_PATH}/nodejs/bin/node.exe"
+  chmod +x "${NODE_ARTIFACTS_PATH}/nodejs/bin/npm"
+else
+  tar -xf "$node_archive_path" -C "${NODE_ARTIFACTS_PATH}"
+  mv "${NODE_ARTIFACTS_PATH}/${node_directory}" "${NODE_ARTIFACTS_PATH}/nodejs"
+fi
+
+export PATH="$NODE_ARTIFACTS_PATH/npm_global/bin:$NODE_ARTIFACTS_PATH/nodejs/bin:$PATH"
+hash -r
+
+# Set npm -g prefix to our local artifacts directory
+cat <<EOT > .npmrc
+prefix=$NODE_ARTIFACTS_PATH/npm_global
+EOT
+
+if [[ $operating_system != "win" ]]; then
+  # Update npm to latest when we can
+  npm install --global npm@latest
+  hash -r
+fi
+
+echo "npm version: $(npm -v)"
+
+npm install "${NPM_OPTIONS}"

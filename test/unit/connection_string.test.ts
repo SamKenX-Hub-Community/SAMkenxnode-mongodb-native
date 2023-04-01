@@ -1,18 +1,22 @@
 import { expect } from 'chai';
 import * as dns from 'dns';
 import * as sinon from 'sinon';
-import { promisify } from 'util';
 
-import { MongoCredentials } from '../../src/cmap/auth/mongo_credentials';
-import { AUTH_MECHS_AUTH_SRC_EXTERNAL, AuthMechanism } from '../../src/cmap/auth/providers';
-import { FEATURE_FLAGS, parseOptions, resolveSRVRecord } from '../../src/connection_string';
 import {
+  AUTH_MECHS_AUTH_SRC_EXTERNAL,
+  AuthMechanism,
+  FEATURE_FLAGS,
   MongoAPIError,
+  MongoClient,
+  MongoCredentials,
   MongoDriverError,
   MongoInvalidArgumentError,
-  MongoParseError
-} from '../../src/error';
-import { MongoClient, MongoOptions } from '../../src/mongo_client';
+  MongoOptions,
+  MongoParseError,
+  MongoRuntimeError,
+  parseOptions,
+  resolveSRVRecord
+} from '../mongodb';
 
 describe('Connection String', function () {
   it('should not support auth passed with user', function () {
@@ -233,6 +237,18 @@ describe('Connection String', function () {
     expect(options).to.not.have.property('credentials');
   });
 
+  for (const mechanism of ['GSSAPI', 'MONGODB-X509']) {
+    context(`when the authMechanism is ${mechanism} and authSource is NOT $external`, function () {
+      it('throws a MongoParseError', function () {
+        expect(() =>
+          parseOptions(`mongodb+srv://hostname/?authMechanism=${mechanism}&authSource=invalid`)
+        )
+          .to.throw(MongoParseError)
+          .to.match(/requires an authSource of '\$external'/);
+      });
+    });
+  }
+
   it('should omit credentials and not throw a MongoAPIError if the only auth related option is authSource', async () => {
     // The error we're looking to **not** see is
     // `new MongoInvalidArgumentError('No AuthProvider for ${credentials.mechanism} defined.')`
@@ -397,7 +413,7 @@ describe('Connection String', function () {
     it('should validate authMechanism', function () {
       expect(() => parseOptions('mongodb://localhost/?authMechanism=DOGS')).to.throw(
         MongoParseError,
-        'authMechanism one of MONGODB-AWS,MONGODB-CR,DEFAULT,GSSAPI,PLAIN,SCRAM-SHA-1,SCRAM-SHA-256,MONGODB-X509, got DOGS'
+        'authMechanism one of MONGODB-AWS,MONGODB-CR,DEFAULT,GSSAPI,PLAIN,SCRAM-SHA-1,SCRAM-SHA-256,MONGODB-X509,MONGODB-OIDC, got DOGS'
       );
     });
 
@@ -418,8 +434,6 @@ describe('Connection String', function () {
   });
 
   describe('resolveSRVRecord()', () => {
-    const resolveSRVRecordAsync = promisify(resolveSRVRecord);
-
     afterEach(() => {
       sinon.restore();
     });
@@ -438,25 +452,31 @@ describe('Connection String', function () {
 
       // first call is for stubbing resolveSrv
       // second call is for stubbing resolveTxt
-      sinon.stub(dns, 'resolveSrv').callsFake((address, callback) => {
-        return process.nextTick(callback, null, mockAddress);
+      sinon.stub(dns.promises, 'resolveSrv').callsFake(async () => {
+        return mockAddress;
       });
 
-      sinon.stub(dns, 'resolveTxt').callsFake((address, whatWeTest) => {
-        whatWeTest(null, mockRecord);
+      sinon.stub(dns.promises, 'resolveTxt').callsFake(async () => {
+        return mockRecord;
       });
     }
 
     for (const mechanism of AUTH_MECHS_AUTH_SRC_EXTERNAL) {
       it(`should set authSource to $external for ${mechanism} external mechanism`, async function () {
         makeStub('authSource=thisShouldNotBeAuthSource');
+        const mechanismProperties = {};
+        if (mechanism === AuthMechanism.MONGODB_OIDC) {
+          mechanismProperties.PROVIDER_NAME = 'aws';
+        }
+
         const credentials = new MongoCredentials({
           source: '$external',
           mechanism,
-          username: 'username',
+          username: mechanism === AuthMechanism.MONGODB_OIDC ? undefined : 'username',
           password: mechanism === AuthMechanism.MONGODB_X509 ? undefined : 'password',
-          mechanismProperties: {}
+          mechanismProperties: mechanismProperties
         });
+
         credentials.validate();
 
         const options = {
@@ -466,7 +486,7 @@ describe('Connection String', function () {
           userSpecifiedAuthSource: false
         } as MongoOptions;
 
-        await resolveSRVRecordAsync(options);
+        await resolveSRVRecord(options);
         // check MongoCredentials instance (i.e. whether or not merge on options.credentials was called)
         expect(options).property('credentials').to.equal(credentials);
         expect(options).to.have.nested.property('credentials.source', '$external');
@@ -492,7 +512,7 @@ describe('Connection String', function () {
         userSpecifiedAuthSource: false
       } as MongoOptions;
 
-      await resolveSRVRecordAsync(options);
+      await resolveSRVRecord(options);
       // check MongoCredentials instance (i.e. whether or not merge on options.credentials was called)
       expect(options).property('credentials').to.not.equal(credentials);
       expect(options).to.have.nested.property('credentials.source', 'thisShouldBeAuthSource');
@@ -516,7 +536,7 @@ describe('Connection String', function () {
         userSpecifiedAuthSource: false
       } as MongoOptions;
 
-      await resolveSRVRecordAsync(options as any);
+      await resolveSRVRecord(options as any);
       // check MongoCredentials instance (i.e. whether or not merge on options.credentials was called)
       expect(options).property('credentials').to.equal(credentials);
       expect(options).to.have.nested.property('credentials.source', 'admin');
@@ -532,7 +552,7 @@ describe('Connection String', function () {
         userSpecifiedAuthSource: false
       } as MongoOptions;
 
-      await resolveSRVRecordAsync(options as any);
+      await resolveSRVRecord(options as any);
       expect(options).to.have.nested.property('credentials.username', '');
       expect(options).to.have.nested.property('credentials.mechanism', 'DEFAULT');
       expect(options).to.have.nested.property('credentials.source', 'thisShouldBeAuthSource');
@@ -541,8 +561,9 @@ describe('Connection String', function () {
 
   describe('feature flags', () => {
     it('should be stored in the FEATURE_FLAGS Set', () => {
-      expect(FEATURE_FLAGS.size).to.equal(1);
+      expect(FEATURE_FLAGS.size).to.equal(2);
       expect(FEATURE_FLAGS.has(Symbol.for('@@mdb.skipPingOnConnect'))).to.be.true;
+      expect(FEATURE_FLAGS.has(Symbol.for('@@mdb.enableMongoLogger'))).to.be.true;
       // Add more flags here
     });
 
@@ -571,6 +592,53 @@ describe('Connection String', function () {
       const flag = Array.from(FEATURE_FLAGS.keys())[0]; // grab a random supported flag
       const client = new MongoClient('mongodb://iLoveJavaScript', { [flag]: null });
       expect(client.s.options).to.have.property(flag, null);
+    });
+  });
+
+  describe('IPv6 host addresses', () => {
+    it('should not allow multiple unbracketed portless localhost IPv6 addresses', () => {
+      // Note there is no "port-full" version of this test, there's no way to distinguish when a port begins without brackets
+      expect(() => new MongoClient('mongodb://::1,::1,::1/test')).to.throw(
+        /invalid connection string/i
+      );
+    });
+
+    it('should not allow multiple unbracketed portless remote IPv6 addresses', () => {
+      expect(
+        () =>
+          new MongoClient(
+            'mongodb://ABCD:f::abcd:abcd:abcd:abcd,ABCD:f::abcd:abcd:abcd:abcd,ABCD:f::abcd:abcd:abcd:abcd/test'
+          )
+      ).to.throw(MongoRuntimeError);
+    });
+
+    it('should allow multiple bracketed portless localhost IPv6 addresses', () => {
+      const client = new MongoClient('mongodb://[::1],[::1],[::1]/test');
+      expect(client.options.hosts).to.deep.equal([
+        { host: '::1', port: 27017, isIPv6: true, socketPath: undefined },
+        { host: '::1', port: 27017, isIPv6: true, socketPath: undefined },
+        { host: '::1', port: 27017, isIPv6: true, socketPath: undefined }
+      ]);
+    });
+
+    it('should allow multiple bracketed portless remote IPv6 addresses', () => {
+      const client = new MongoClient(
+        'mongodb://[ABCD:f::abcd:abcd:abcd:abcd],[ABCD:f::abcd:abcd:abcd:abcd],[ABCD:f::abcd:abcd:abcd:abcd]/test'
+      );
+      expect(client.options.hosts).to.deep.equal([
+        { host: 'abcd:f::abcd:abcd:abcd:abcd', port: 27017, isIPv6: true, socketPath: undefined },
+        { host: 'abcd:f::abcd:abcd:abcd:abcd', port: 27017, isIPv6: true, socketPath: undefined },
+        { host: 'abcd:f::abcd:abcd:abcd:abcd', port: 27017, isIPv6: true, socketPath: undefined }
+      ]);
+    });
+
+    it('should allow multiple bracketed IPv6 addresses with specified ports', () => {
+      const client = new MongoClient('mongodb://[::1]:27018,[::1]:27019,[::1]:27020/test');
+      expect(client.options.hosts).to.deep.equal([
+        { host: '::1', port: 27018, isIPv6: true, socketPath: undefined },
+        { host: '::1', port: 27019, isIPv6: true, socketPath: undefined },
+        { host: '::1', port: 27020, isIPv6: true, socketPath: undefined }
+      ]);
     });
   });
 });

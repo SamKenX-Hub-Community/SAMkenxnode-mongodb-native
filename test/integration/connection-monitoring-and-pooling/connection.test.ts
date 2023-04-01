@@ -1,11 +1,17 @@
 import { expect } from 'chai';
 
-import { MongoClient, MongoServerError, ServerHeartbeatStartedEvent } from '../../../src';
-import { connect } from '../../../src/cmap/connect';
-import { Connection } from '../../../src/cmap/connection';
-import { LEGACY_HELLO_COMMAND } from '../../../src/constants';
-import { Topology } from '../../../src/sdam/topology';
-import { HostAddress, ns } from '../../../src/utils';
+import {
+  connect,
+  Connection,
+  ConnectionOptions,
+  LEGACY_HELLO_COMMAND,
+  makeClientMetadata,
+  MongoClient,
+  MongoServerError,
+  ns,
+  ServerHeartbeatStartedEvent,
+  Topology
+} from '../../mongodb';
 import { skipBrokenAuthTestBeforeEachHook } from '../../tools/runner/hooks/configuration';
 import { assert as test, setupDatabase } from '../shared';
 
@@ -27,12 +33,13 @@ describe('Connection', function () {
     it('should execute a command against a server', {
       metadata: { requires: { apiVersion: false, topology: '!load-balanced' } },
       test: function (done) {
-        const connectOptions = Object.assign(
-          { connectionType: Connection },
-          this.configuration.options
-        );
+        const connectOptions: Partial<ConnectionOptions> = {
+          connectionType: Connection,
+          ...this.configuration.options,
+          metadata: makeClientMetadata({ driverInfo: {} })
+        };
 
-        connect(connectOptions, (err, conn) => {
+        connect(connectOptions as any as ConnectionOptions, (err, conn) => {
           expect(err).to.not.exist;
           this.defer(_done => conn.destroy(_done));
 
@@ -49,12 +56,14 @@ describe('Connection', function () {
     it('should emit command monitoring events', {
       metadata: { requires: { apiVersion: false, topology: '!load-balanced' } },
       test: function (done) {
-        const connectOptions = Object.assign(
-          { connectionType: Connection, monitorCommands: true },
-          this.configuration.options
-        );
+        const connectOptions: Partial<ConnectionOptions> = {
+          connectionType: Connection,
+          monitorCommands: true,
+          ...this.configuration.options,
+          metadata: makeClientMetadata({ driverInfo: {} })
+        };
 
-        connect(connectOptions, (err, conn) => {
+        connect(connectOptions as any as ConnectionOptions, (err, conn) => {
           expect(err).to.not.exist;
           this.defer(_done => conn.destroy(_done));
 
@@ -74,40 +83,19 @@ describe('Connection', function () {
       }
     });
 
-    it.skip('should support socket timeouts', {
-      // FIXME: NODE-2941
-      metadata: {
-        requires: {
-          os: '!win32' // 240.0.0.1 doesnt work for windows
-        }
-      },
-      test: function (done) {
-        const connectOptions = {
-          hostAddress: new HostAddress('240.0.0.1'),
-          connectionType: Connection,
-          connectionTimeout: 500
-        };
-
-        connect(connectOptions, err => {
-          expect(err).to.exist;
-          expect(err).to.match(/timed out/);
-          done();
-        });
-      }
-    });
-
     it('should support calling back multiple times on exhaust commands', {
       metadata: {
         requires: { apiVersion: false, mongodb: '>=4.2.0', topology: ['single'] }
       },
       test: function (done) {
         const namespace = ns(`${this.configuration.db}.$cmd`);
-        const connectOptions = Object.assign(
-          { connectionType: Connection },
-          this.configuration.options
-        );
+        const connectOptions: Partial<ConnectionOptions> = {
+          connectionType: Connection,
+          ...this.configuration.options,
+          metadata: makeClientMetadata({ driverInfo: {} })
+        };
 
-        connect(connectOptions, (err, conn) => {
+        connect(connectOptions as any as ConnectionOptions, (err, conn) => {
           expect(err).to.not.exist;
           this.defer(_done => conn.destroy(_done));
 
