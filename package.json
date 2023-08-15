@@ -94,7 +94,7 @@
     "typescript": "^4.9.5",
     "typescript-cached-transpile": "^0.0.6",
     "v8-heapsnapshot": "^1.2.0",
-    "xml2js": "^0.4.23",
+    "xml2js": "^0.5.0",
     "yargs": "^17.7.1"
   },
   "license": "Apache-2.0",
